@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.GSWaterBluetooth" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/gswater_primary</item>
+        <item name="colorPrimaryVariant">@color/gswater_primary_dark</item>
+        <item name="colorSecondary">@color/gswater_accent</item>
+        <item name="android:statusBarColor">@color/gswater_primary_dark</item>
+        <item name="android:navigationBarColor">@color/gswater_primary_dark</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+    </style>
+</resources>

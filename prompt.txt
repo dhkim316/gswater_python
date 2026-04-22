@@ -1,0 +1,17 @@
+{SA}나 {FL}송신후 수신 타임 아웃 시간은 현재 얼마인가?
+
+
+현재시간이 23시25분인데
+화면에    14시25분으로 표시되네
+확인 해줘봐. 코드 거드리지 말고
+
+
+보드가 MQTT로 내보내는 timestamp는 app.py (line 1395)에서 이렇게 만들어집니다. 
+RTC에서 읽은 시간을 그대로 YYYY-MM-DDTHH:mm:ss+09:00 형태
+그럼 RTC에서 읽은 시간을 그대로 YYYY-MM-DDTHH:mm:ss+00:00 으로 하면 rtc 시간 그대로 보내겠네
+형태
+
+mqtt 데이터 pay load부분 알려줘
+rf통신이 안되는 경우에는 mqtt발행을 안하나?
+
+comm_failed == True

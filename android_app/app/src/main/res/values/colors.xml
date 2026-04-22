@@ -1,0 +1,7 @@
+<resources>
+    <color name="gswater_primary">#0A5C5C</color>
+    <color name="gswater_primary_dark">#073D3D</color>
+    <color name="gswater_accent">#E0F2F1</color>
+    <color name="black">#000000</color>
+    <color name="white">#FFFFFF</color>
+</resources>
