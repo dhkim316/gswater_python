@@ -15,3 +15,8 @@ mqtt 데이터 pay load부분 알려줘
 rf통신이 안되는 경우에는 mqtt발행을 안하나?
 
 comm_failed == True
+일때도 현재 상태대로 mqtt발행처리해줘
+
+ble시간 동기화부분 어디인지 알려줘
+
+local git저정소 업데이트하고 

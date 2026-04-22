@@ -46,7 +46,7 @@ SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
 RF_CHANNEL = 7
-APP_VERSION = "V7.3"
+APP_VERSION = "V7.4"
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
@@ -1393,7 +1393,7 @@ def parse_int_or_none(value):
 
 
 def build_iso_timestamp(rtc=None, rtc_cache=None, now_ms=None, allow_rtc_refresh=True):
-    return build_datetime_text(rtc, rtc_cache, now_ms, allow_rtc_refresh).replace(" ", "T") + "+09:00"
+    return build_datetime_text(rtc, rtc_cache, now_ms, allow_rtc_refresh).replace(" ", "T") + "+00:00"
 
 
 def build_install_date(config):
@@ -1465,7 +1465,7 @@ def build_dashboard_snapshot(config, rtc, mqtt_bridge, parsed, tank_level, flow_
     return {
         "timestamp": build_iso_timestamp(rtc, rtc_cache, now_ms, False),
         "data": data,
-        "publish_dashboard": parsed is not None and not comm_failed,
+        "publish_dashboard": parsed is not None,
     }
 
 
