@@ -82,6 +82,7 @@ class MqttBridge:
         }
         self.pump_override = None
         self.pending_pump_result = None
+        self.pending_ota_commands = []
         self.pending_force_publish = False
 
     def _text(self, value):
@@ -155,6 +156,11 @@ class MqttBridge:
         result = self.pending_pump_result
         self.pending_pump_result = None
         return result
+
+    def pop_pending_ota_command(self):
+        if not self.pending_ota_commands:
+            return None
+        return self.pending_ota_commands.pop(0)
 
     def request_publish(self):
         self.pending_force_publish = True
@@ -309,6 +315,17 @@ class MqttBridge:
         topic = "{}/pico/{}/pump_state".format(self.mqtt_user_id, identity["region_code"])
         return self._publish_json(topic, payload)
 
+    def publish_ota_status(self, config, payload, retain=False):
+        if not self.client:
+            return False
+        identity = self.identity(config)
+        topic = "{}/pico/{}/{}/ota_state".format(
+            self.mqtt_user_id,
+            identity["region_code"],
+            identity["device_code"],
+        )
+        return self._publish_json(topic, payload, retain=retain)
+
     def _parse_pump_command(self, raw_text):
         text = self._text(raw_text)
         if not text or text == "[object Object]":
@@ -345,6 +362,18 @@ class MqttBridge:
             return "auto"
         return None
 
+    def _matches_target(self, parts):
+        if len(parts) < 4 or parts[0] != self.mqtt_user_id or parts[1] != "pico":
+            return False
+
+        identity = self.identity_cache
+        target_device = parts[3] if len(parts) >= 5 else ""
+        if parts[2] != identity["region_code"]:
+            return False
+        if len(parts) >= 5 and target_device and target_device != identity["device_code"]:
+            return False
+        return True
+
     def _on_message(self, topic, msg):
         try:
             topic_text = topic.decode("utf-8")
@@ -354,31 +383,44 @@ class MqttBridge:
             return
 
         parts = topic_text.split("/")
-        if len(parts) < 4 or parts[0] != self.mqtt_user_id or parts[1] != "pico":
+        if not self._matches_target(parts):
             return
         topic_name = parts[-1]
-        if topic_name != "pump_cmd":
+        if topic_name == "pump_cmd":
+            command = self._parse_pump_command(msg_text)
+            if command == "auto":
+                self.pump_override = None
+                self.pending_pump_result = "cleared"
+            elif command in ("on", "off"):
+                self.pump_override = command
+                self.pending_pump_result = "applied"
+            else:
+                self.pending_pump_result = "rejected"
+
+            self.pending_force_publish = True
+            print("MQTT pump_cmd -> {}".format(command if command is not None else "invalid"))
             return
 
-        identity = self.identity_cache
-        target_device = parts[3] if len(parts) >= 5 else ""
-        if parts[2] != identity["region_code"]:
-            return
-        if len(parts) >= 5 and target_device and target_device != identity["device_code"]:
+        if topic_name not in ("ota_cmd", "ota"):
             return
 
-        command = self._parse_pump_command(msg_text)
-        if command == "auto":
-            self.pump_override = None
-            self.pending_pump_result = "cleared"
-        elif command in ("on", "off"):
-            self.pump_override = command
-            self.pending_pump_result = "applied"
-        else:
-            self.pending_pump_result = "rejected"
+        try:
+            payload = json.loads(msg_text)
+        except Exception as exc:
+            print("MQTT ota decode failed: {}".format(exc))
+            return
 
-        self.pending_force_publish = True
-        print("MQTT pump_cmd -> {}".format(command if command is not None else "invalid"))
+        if not isinstance(payload, dict):
+            print("MQTT ota invalid payload")
+            return
+
+        self.pending_ota_commands.append(
+            {
+                "topic": topic_text,
+                "payload": payload,
+            }
+        )
+        print("MQTT ota_cmd queued -> {}".format(self._text(payload.get("cmd"))))
 
     def _schedule_wifi_reconnect(self, delay_ms=None):
         now_ms = time.ticks_ms()

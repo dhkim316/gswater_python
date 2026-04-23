@@ -12,6 +12,7 @@ from dgus_control_pico import DgusControl
 from dgus_vp_registry import VP_JSON_PATH, load_config_metadata, load_pages as load_pages_from_json, load_setting_pages, load_vp_map as load_vp_map_from_json
 from gpio_extender_pico import GPIOExtender
 from mqtt_bridge_pico import MqttBridge
+from mqtt_ota import MqttOtaManager
 from rf_communication_pico import RFCommunicator
 from rf_packet_parser_pico import receive_and_parse
 from rtc_pico import RTCISL1208
@@ -46,7 +47,7 @@ SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
 RF_CHANNEL = 7
-APP_VERSION = "V7.5"
+APP_VERSION = "V7.6"
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
@@ -1511,6 +1512,18 @@ def set_panel_relay_with_pump_icon(display, vp_map, ext, state):
     return applied
 
 
+def enter_mqtt_ota_mode(display, vp_map, ext, pending_display_updates, pulse_deadlines):
+    clear_display_queue(pending_display_updates)
+    pulse_deadlines.clear()
+    set_icon_field(display, vp_map, "TX_LED_ICON", 0)
+    set_icon_field(display, vp_map, "RX_LED_ICON", 0)
+    set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
+    if ext:
+        ext.set_relay2_motor(0)
+        ext.set_relay3_alarm(0)
+    print("MQTT OTA mode entered -> normal runtime paused")
+
+
 def update_relays(display, vp_map, ext, config, tank_level, sensor_type_is_q, pump_active, comm_failed, well_level_lockout):
     alarm_level = parse_int_or_none(get_config_value(config, "SET_ALARM_LEVEL_TXT"))
     low_level_alarm_active = tank_level is not None and alarm_level is not None and tank_level <= alarm_level
@@ -1678,6 +1691,8 @@ def run():
     next_clock_update = time.ticks_add(now_ms, CLOCK_UPDATE_MS)
     next_current_update = time.ticks_add(now_ms, CURRENT_UPDATE_MS)
     mqtt_bridge = MqttBridge(mqtt_user_id=MQTT_USER_ID, publish_interval_ms=MQTT_PUBLISH_MS)
+    mqtt_ota = MqttOtaManager()
+    mqtt_ota_mode = False
 
     display = DgusControl()
     rf = RFCommunicator()
@@ -1733,6 +1748,21 @@ def run():
                     print("btn_reset pressed -> system reboot")
                     machine_reset()
 
+                now_ms = time.ticks_ms()
+                mqtt_bridge.service(config)
+                mqtt_ota.service(config, mqtt_bridge, now_ms)
+                if mqtt_ota.is_active():
+                    if not mqtt_ota_mode:
+                        mqtt_ota_mode = True
+                        enter_mqtt_ota_mode(display, vp_map, ext, pending_display_updates, pulse_deadlines)
+                    previous_pressed = pressed_set
+                    time.sleep_ms(POLL_MS)
+                    continue
+
+                if mqtt_ota_mode:
+                    mqtt_ota_mode = False
+                    print("MQTT OTA mode exited -> normal runtime resumed")
+
                 if page_index in SETTING_PAGE_ITEMS:
                     if handle_setting_page_input(display, vp_map, config, setting_state, page_index, pressed_set, newly_pressed):
                         previous_pressed = pressed_set
@@ -1772,12 +1802,10 @@ def run():
                     previous_pressed = pressed_set
                     continue
 
-                now_ms = time.ticks_ms()
                 clock_update_due = time.ticks_diff(now_ms, next_clock_update) >= 0
                 service_bluetooth_events(display, bt_server)
                 if service_bluetooth_updates(display, vp_map, rf, config, setting_state, bt_server, rtc, rtc_cache):
                     mqtt_bridge.request_publish()
-                mqtt_bridge.service(config)
                 service_setting_blink(display, vp_map, config, setting_state, now_ms)
                 if page_index in SETTING_PAGE_ITEMS and is_setting_idle_timeout(setting_state, now_ms):
                     exit_setting_mode(display, vp_map, config, setting_state)

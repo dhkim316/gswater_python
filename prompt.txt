@@ -37,3 +37,15 @@ RF_ANT_ICON은 지금 MQTT용 상태가 아니라 화면 전용 아이콘 값입
 comm_failed == True 일때 
 
 comm_failed 일때 pressure_enabled 값은 이전 값을 유지 해야함 
+
+mqtt로 파일 업로드 및 리부트 하는 기능 추가
+1. 별도의 모쥴로 구현 ex:mqtt_ota.py
+2. app.py에서 import해서 실행
+3. app.py는 평상시 정상 기능 수행, ota모드로 진입시 모든 정상기능 정지. ota모드만 집중함
+4. ota모드는 대략 다음 순서로...
+    {"cmd":"ota.enter", ...}
+    {"cmd":"ota.chunk", ...}
+    {"cmd":"ota.end", ...}
+    {"cmd":"ota.abort", ...}
+이걸 pico side만 구현 해주면... 그걸 기반으로 node-red팀에 전달 하려고 함    
+    
