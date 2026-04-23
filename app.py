@@ -46,7 +46,7 @@ SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
 RF_CHANNEL = 7
-APP_VERSION = "V7.4"
+APP_VERSION = "V7.5"
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
@@ -1428,10 +1428,12 @@ def build_dashboard_snapshot(config, rtc, mqtt_bridge, parsed, tank_level, flow_
     version_text = APP_VERSION
     relay3_alarm_reason = get_relay3_alarm_reason()
 
+    if parsed:
+        pressure_enabled = parsed.get("sensor_type") == "P"
+
     if parsed and not comm_failed:
         battery_stage = parse_int_or_none(parsed.get("battery"))
         solar_state = "on" if parsed.get("solar") == "1" else "off"
-        pressure_enabled = parsed.get("sensor_type") == "P"
         version_text = "{}{}".format(APP_VERSION[:4], parsed.get("tank_version", ""))
 
     data = {
@@ -1460,6 +1462,7 @@ def build_dashboard_snapshot(config, rtc, mqtt_bridge, parsed, tank_level, flow_
         "battery_stage": battery_stage,
         "battery_pct": battery_pct_from_stage(battery_stage),
         "current_date": build_datetime_text(rtc, rtc_cache, now_ms, False)[:10],
+        "rf_ant": "off" if comm_failed else "on",
     }
 
     return {

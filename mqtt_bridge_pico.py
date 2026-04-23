@@ -31,6 +31,7 @@ FAST_RUNTIME_KEYS = (
     "flow_ton",
     "solar",
     "battery_pct",
+    "rf_ant",
 )
 MQTT_ERR_CONNRESET = 104
 MQTT_ERR_TIMEDOUT = 110
