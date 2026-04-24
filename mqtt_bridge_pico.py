@@ -75,9 +75,8 @@ class MqttBridge:
         self.last_ping_ms = 0
         self.last_broker = ""
         self.last_meta_signature = ""
-        chip_region_code = self._chip_region_code()
         self.identity_cache = {
-            "region_code": chip_region_code,
+            "region_code": "KR00",
             "display_region": default_display_region,
             "device_code": "0000",
         }
@@ -115,14 +114,6 @@ class MqttBridge:
             return "KR00"
         return raw.replace("/", "-")
 
-    def _chip_region_code(self):
-        if machine is not None and ubinascii is not None:
-            try:
-                return ubinascii.hexlify(machine.unique_id()).decode("ascii").upper()
-            except Exception:
-                pass
-        return "KR00"
-
     def _display_region(self, raw_region, region_code):
         raw = self._text(raw_region)
         if raw:
@@ -145,7 +136,7 @@ class MqttBridge:
     def identity(self, config):
         raw_region = self._config_value(config, "SET_REGION_TXT")
         raw_device = self._config_value(config, "SET_SERIAL_NUM_TXT")
-        region_code = self._chip_region_code()
+        region_code = self._normalized_region_code(raw_region)
         identity = {
             "region_code": region_code,
             "display_region": self._display_region(raw_region, region_code),
