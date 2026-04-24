@@ -11,9 +11,15 @@ class WifiStationManager:
         self,
         reconnect_delay_ms=5000,
         connect_timeout_ms=20000,
+        soft_reset_after_failures=2,
+        soft_reset_delay_ms=500,
+        reset_on_init=True,
     ):
         self.reconnect_delay_ms = reconnect_delay_ms
         self.connect_timeout_ms = connect_timeout_ms
+        self.soft_reset_after_failures = max(1, int(soft_reset_after_failures))
+        self.soft_reset_delay_ms = max(0, int(soft_reset_delay_ms))
+        self.reset_on_init = bool(reset_on_init)
         self.supported = network is not None
         self.wlan = network.WLAN(network.STA_IF) if self.supported else None
         self.next_reconnect_ms = 0
@@ -21,6 +27,9 @@ class WifiStationManager:
         self.connecting = False
         self.last_ssid = None
         self.last_password = None
+        self.connect_failures = 0
+        if self.reset_on_init and self.wlan:
+            self._reset_wifi_interface()
 
     def network_state(self):
         if not self.wlan:
@@ -41,6 +50,30 @@ class WifiStationManager:
                 self.wlan.disconnect()
         except Exception:
             pass
+
+    def _reset_wifi_interface(self):
+        if not self.wlan:
+            return
+
+        try:
+            self.wlan.disconnect()
+        except Exception:
+            pass
+
+        try:
+            self.wlan.active(False)
+        except Exception:
+            pass
+
+        time.sleep_ms(self.soft_reset_delay_ms)
+
+        try:
+            self.wlan.active(True)
+        except Exception:
+            pass
+
+        time.sleep_ms(self.soft_reset_delay_ms)
+        print("Wi-Fi interface soft reset")
 
     def schedule_reconnect(self, delay_ms=None):
         now_ms = time.ticks_ms()
@@ -74,6 +107,7 @@ class WifiStationManager:
             if self.connecting or self.last_ssid is None:
                 self.connecting = False
                 self.connect_started_ms = 0
+                self.connect_failures = 0
                 self.last_ssid = ssid
                 self.last_password = password
                 print("Wi-Fi connected: {}".format(self.wlan.ifconfig()))
@@ -89,6 +123,10 @@ class WifiStationManager:
         if self.connecting:
             if time.ticks_diff(now_ms, self.connect_started_ms) > self.connect_timeout_ms:
                 print("Wi-Fi connect timeout: {}".format(ssid))
+                self.connect_failures += 1
+                if self.connect_failures >= self.soft_reset_after_failures:
+                    self._reset_wifi_interface()
+                    self.connect_failures = 0
                 self.schedule_reconnect()
             return False
 

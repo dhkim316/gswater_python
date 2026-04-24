@@ -12,7 +12,6 @@ from dgus_control_pico import DgusControl
 from dgus_vp_registry import VP_JSON_PATH, load_config_metadata, load_pages as load_pages_from_json, load_setting_pages, load_vp_map as load_vp_map_from_json
 from gpio_extender_pico import GPIOExtender
 from mqtt_bridge_pico import MqttBridge
-from mqtt_ota import MqttOtaManager
 from rf_communication_pico import RFCommunicator
 from rf_packet_parser_pico import receive_and_parse
 from rtc_pico import RTCISL1208
@@ -47,7 +46,7 @@ SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
 RF_CHANNEL = 7
-APP_VERSION = "V7.6"
+APP_VERSION = "V7.8"
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
@@ -1524,7 +1523,19 @@ def enter_mqtt_ota_mode(display, vp_map, ext, pending_display_updates, pulse_dea
     print("MQTT OTA mode entered -> normal runtime paused")
 
 
-def update_relays(display, vp_map, ext, config, tank_level, sensor_type_is_q, pump_active, comm_failed, well_level_lockout):
+def update_relays(
+    display,
+    vp_map,
+    ext,
+    config,
+    tank_level,
+    sensor_type_is_q,
+    pump_active,
+    comm_failed,
+    well_level_lockout,
+    pump_control_mode=None,
+    pump_override=None,
+):
     alarm_level = parse_int_or_none(get_config_value(config, "SET_ALARM_LEVEL_TXT"))
     low_level_alarm_active = tank_level is not None and alarm_level is not None and tank_level <= alarm_level
     high_level_alarm_active = (
@@ -1532,27 +1543,31 @@ def update_relays(display, vp_map, ext, config, tank_level, sensor_type_is_q, pu
         and tank_level is not None
         and tank_level >= PRESSURE_HIGH_LEVEL_ALARM_PERCENT
     )
+    manual_override_active = pump_control_mode == "manual" and pump_override in ("on", "off")
     well_level_voltage = read_well_level_voltage()
     well_level_lockout = update_well_level_relay_lockout(well_level_lockout, well_level_voltage)
-    alarm_reasons = compute_relay3_alarm_reasons(
-        comm_failed,
-        well_level_lockout,
-        low_level_alarm_active,
-        high_level_alarm_active,
-    )
+    if manual_override_active:
+        alarm_reasons = []
+    else:
+        alarm_reasons = compute_relay3_alarm_reasons(
+            comm_failed,
+            well_level_lockout,
+            low_level_alarm_active,
+            high_level_alarm_active,
+        )
     set_relay3_alarm_reason(alarm_reasons)
     alarm_active = bool(alarm_reasons)
 
     if not ext:
         return well_level_lockout
 
-    if comm_failed:
+    if comm_failed and not manual_override_active:
         set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
         ext.set_relay2_motor(0)
         ext.set_relay3_alarm(1)
         return well_level_lockout
 
-    if well_level_lockout:
+    if well_level_lockout and not manual_override_active:
         set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
         ext.set_relay2_motor(0)
         ext.set_relay3_alarm(1)
@@ -1576,6 +1591,7 @@ def service_runtime(
     last_tank_level,
     comm_failed,
     pump_state,
+    pump_control_mode,
     pump_override,
     next_clock_update,
     next_current_update,
@@ -1583,9 +1599,9 @@ def service_runtime(
 ):
     service_icon_pulses(display, vp_map, pulse_deadlines, now_ms)
     update_tank_level_display(display, vp_map, last_tank_level, comm_failed, display_cache)
-    if pump_override == "on":
-        pump_active = not comm_failed
-    elif pump_override == "off":
+    if pump_control_mode == "manual" and pump_override == "on":
+        pump_active = True
+    elif pump_control_mode == "manual" and pump_override == "off":
         pump_active = False
     elif comm_failed:
         pump_active = False
@@ -1691,7 +1707,7 @@ def run():
     next_clock_update = time.ticks_add(now_ms, CLOCK_UPDATE_MS)
     next_current_update = time.ticks_add(now_ms, CURRENT_UPDATE_MS)
     mqtt_bridge = MqttBridge(mqtt_user_id=MQTT_USER_ID, publish_interval_ms=MQTT_PUBLISH_MS)
-    mqtt_ota = MqttOtaManager()
+    mqtt_ota = None
     mqtt_ota_mode = False
 
     display = DgusControl()
@@ -1750,8 +1766,16 @@ def run():
 
                 now_ms = time.ticks_ms()
                 mqtt_bridge.service(config)
-                mqtt_ota.service(config, mqtt_bridge, now_ms)
-                if mqtt_ota.is_active():
+                if mqtt_ota is None and mqtt_bridge.has_pending_ota_command():
+                    from mqtt_ota import MqttOtaManager
+
+                    mqtt_ota = MqttOtaManager()
+                    print("MQTT OTA manager loaded")
+
+                if mqtt_ota is not None:
+                    mqtt_ota.service(config, mqtt_bridge, now_ms)
+
+                if mqtt_ota is not None and mqtt_ota.is_active():
                     if not mqtt_ota_mode:
                         mqtt_ota_mode = True
                         enter_mqtt_ota_mode(display, vp_map, ext, pending_display_updates, pulse_deadlines)
@@ -1835,6 +1859,7 @@ def run():
                     last_tank_level,
                     comm_failed,
                     pump_state,
+                    mqtt_bridge.get_pump_control_mode(),
                     mqtt_bridge.get_pump_override(),
                     next_clock_update,
                     next_current_update,
@@ -1879,6 +1904,8 @@ def run():
                     pump_active,
                     comm_failed,
                     well_level_lockout,
+                    mqtt_bridge.get_pump_control_mode(),
+                    mqtt_bridge.get_pump_override(),
                 )
 
                 if get_config_value(config, "SET_INSTALL_FLOW_METER_ICON") != "1":
@@ -1948,6 +1975,7 @@ def run():
 
                 pending_pump_result = mqtt_bridge.pop_pending_pump_result()
                 if pending_pump_result:
+                    pending_pump_command = mqtt_bridge.pop_pending_pump_command()
                     snapshot = build_dashboard_snapshot(
                         config,
                         rtc,
@@ -1966,6 +1994,7 @@ def run():
                         snapshot["data"]["pump"],
                         pending_pump_result,
                         snapshot["timestamp"],
+                        pending_pump_command,
                     )
                     mqtt_bridge.publish_runtime(config, snapshot)
 

@@ -75,12 +75,15 @@ class MqttBridge:
         self.last_ping_ms = 0
         self.last_broker = ""
         self.last_meta_signature = ""
+        chip_region_code = self._chip_region_code()
         self.identity_cache = {
-            "region_code": "KR00",
+            "region_code": chip_region_code,
             "display_region": default_display_region,
             "device_code": "0000",
         }
+        self.pump_control_mode = "auto"
         self.pump_override = None
+        self.pending_pump_command = None
         self.pending_pump_result = None
         self.pending_ota_commands = []
         self.pending_force_publish = False
@@ -112,6 +115,14 @@ class MqttBridge:
             return "KR00"
         return raw.replace("/", "-")
 
+    def _chip_region_code(self):
+        if machine is not None and ubinascii is not None:
+            try:
+                return ubinascii.hexlify(machine.unique_id()).decode("ascii").upper()
+            except Exception:
+                pass
+        return "KR00"
+
     def _display_region(self, raw_region, region_code):
         raw = self._text(raw_region)
         if raw:
@@ -134,7 +145,7 @@ class MqttBridge:
     def identity(self, config):
         raw_region = self._config_value(config, "SET_REGION_TXT")
         raw_device = self._config_value(config, "SET_SERIAL_NUM_TXT")
-        region_code = self._normalized_region_code(raw_region)
+        region_code = self._chip_region_code()
         identity = {
             "region_code": region_code,
             "display_region": self._display_region(raw_region, region_code),
@@ -152,15 +163,26 @@ class MqttBridge:
     def get_pump_override(self):
         return self.pump_override
 
+    def get_pump_control_mode(self):
+        return self.pump_control_mode
+
     def pop_pending_pump_result(self):
         result = self.pending_pump_result
         self.pending_pump_result = None
         return result
 
+    def pop_pending_pump_command(self):
+        command = self.pending_pump_command
+        self.pending_pump_command = None
+        return command
+
     def pop_pending_ota_command(self):
         if not self.pending_ota_commands:
             return None
         return self.pending_ota_commands.pop(0)
+
+    def has_pending_ota_command(self):
+        return bool(self.pending_ota_commands)
 
     def request_publish(self):
         self.pending_force_publish = True
@@ -302,16 +324,19 @@ class MqttBridge:
             self.pending_force_publish = False
         return success
 
-    def publish_pump_state(self, config, pump_state, result, timestamp):
+    def publish_pump_state(self, config, pump_state, result, timestamp, command=None):
         if not self.client:
             return False
 
         identity = self.identity(config)
         payload = {
             "timestamp": timestamp,
+            "mode": self.pump_control_mode,
             "pump": "on" if str(pump_state).lower() == "on" else "off",
             "result": self._text(result) or "applied",
         }
+        if command is not None:
+            payload["command"] = self._text(command)
         topic = "{}/pico/{}/pump_state".format(self.mqtt_user_id, identity["region_code"])
         return self._publish_json(topic, payload)
 
@@ -358,6 +383,8 @@ class MqttBridge:
             return "on"
         if text in ("off", "0", "false"):
             return "off"
+        if text in ("manual", "man"):
+            return "manual"
         if text in ("auto", "clear", "none"):
             return "auto"
         return None
@@ -388,12 +415,21 @@ class MqttBridge:
         topic_name = parts[-1]
         if topic_name == "pump_cmd":
             command = self._parse_pump_command(msg_text)
-            if command == "auto":
+            self.pending_pump_command = command if command is not None else "invalid"
+            if command == "manual":
+                self.pump_control_mode = "manual"
                 self.pump_override = None
-                self.pending_pump_result = "cleared"
+                self.pending_pump_result = "mode-applied"
+            elif command == "auto":
+                self.pump_control_mode = "auto"
+                self.pump_override = None
+                self.pending_pump_result = "mode-applied"
             elif command in ("on", "off"):
-                self.pump_override = command
-                self.pending_pump_result = "applied"
+                if self.pump_control_mode == "manual":
+                    self.pump_override = command
+                    self.pending_pump_result = "applied"
+                else:
+                    self.pending_pump_result = "rejected"
             else:
                 self.pending_pump_result = "rejected"
 

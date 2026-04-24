@@ -282,15 +282,3 @@ class DgusControl:
 
 DgusClient = DgusControl
 DWIN = DgusControl
-
-
-if __name__ == "__main__":
-    display = DgusControl()
-    try:
-        target_page = 5
-        print("DGUS test -> set page {}".format(target_page))
-        display.set_page(target_page)
-        time.sleep_ms(100)
-        # print("DGUS current page -> {}".format(display.get_page()))
-    finally:
-        display.close()
