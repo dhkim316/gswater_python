@@ -23,6 +23,10 @@ RF_POLL_MS = 2000
 RF_RESPONSE_WAIT_MS = 1000
 FLOW_POLL_DELAY_MS = 2000
 FLOW_RESPONSE_WAIT_MS = 1000
+FLOW_MIN_TON = 15
+FLOW_MAX_TON = 280
+FLOW_CAL_PULSE_30T = 375
+FLOW_CAL_PULSE_50T = 635
 COMM_FAILSAFE_MS = 60000
 CLOCK_UPDATE_MS = 10000
 CURRENT_UPDATE_MS = 1000
@@ -46,7 +50,7 @@ SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
 RF_CHANNEL = 7
-APP_VERSION = "V7.8"
+APP_VERSION = "V8.0"
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
@@ -1089,11 +1093,31 @@ def update_lte_display(display, vp_map, mqtt_bridge=None, display_cache=None):
 def update_flow_display(display, vp_map, config, display_cache=None, value=""):
     if get_config_value(config, "SET_INSTALL_FLOW_METER_ICON") != "1":
         value = ""
+    elif isinstance(value, int):
+        value = "{} TON".format(value)
 
     if display_cache is None:
         set_text_field(display, vp_map, "FLOW_TXT", value)
     else:
         set_text_field_if_changed(display, vp_map, display_cache, "FLOW_TXT", value)
+
+
+def convert_flow_pulse_to_ton(value):
+    pulse = parse_int_or_none(value)
+    if pulse is None:
+        return None
+
+    slope_denominator = FLOW_CAL_PULSE_50T - FLOW_CAL_PULSE_30T
+    if slope_denominator <= 0:
+        return None
+
+    tons = 30 + ((pulse - FLOW_CAL_PULSE_30T) * 20.0 / slope_denominator)
+    tons = int(tons + 0.5)
+    if tons <= FLOW_MIN_TON:
+        return 0
+    if tons > FLOW_MAX_TON:
+        return FLOW_MAX_TON
+    return tons
 
 
 def read_well_level_voltage():
@@ -1966,8 +1990,9 @@ def run():
                     flow_waiting_response = False
                     flow_raw = rf.receive()
                     print("FL response raw: {}".format(flow_raw))
-                    flow_value = parse_flow_response(flow_raw)
-                    print("FL response parsed: {}".format(flow_value))
+                    flow_pulse = parse_flow_response(flow_raw)
+                    flow_value = convert_flow_pulse_to_ton(flow_pulse)
+                    print("FL response parsed: pulse={} ton={}".format(flow_pulse, flow_value))
                     if flow_value is not None:
                         update_flow_display(display, vp_map, config, display_cache, flow_value)
                     else:

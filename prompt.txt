@@ -4,4 +4,19 @@
 pico 칩 고유번호를 region_code로 적용해줘.
 
 region_code와 주소데이터를 MD5하여 나온 해시로 고유부호를 만들어서 데이터 파싱하고 저장하도록
- 
+
+모든 응답 payload "well_address" 항목을 넣어줘
+
+현재 유량센서 FLOW_TXT = pulse
+1일 30톤 375 pulse
+1일 40톤 510 pulse
+1일 50톤 635 pulse
+이렇게 실측값이 나왔는데 이것을 15톤에서 280톤 까지 리니어라이즈해서
+수신된 펄스값을  톤으로 환산해서 FLOW_TXT에 표시해줘 mqtt의 flow_ton값도 이값으로 적용해줘
+
+
+dgus FLOW_TXT는 뒤에 유량뒤에 TON을 붙여줘,,, mtqq는 지금처럼 유량만 보내고
+
+앱 아이콘을 클릭하면 크롬브라우저로 아래의 링크를 바로 접속하는 안드로이드 앱을 android_link_app 만들고 
+http://222.103.74.152:1880/ui/#!/5
+내 폰에 업로드 햐줘
