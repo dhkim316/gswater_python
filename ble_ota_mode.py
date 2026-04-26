@@ -226,7 +226,7 @@ def parse_bluetooth_message(message):
     return None
 
 
-def service_bluetooth_events(display, vp_map, bt_server):
+def service_bluetooth_events(display, vp_map, bt_server, ota_state=None):
     if not bt_server or not bt_server.enabled or not bt_server.has_event():
         return False
 
@@ -241,6 +241,10 @@ def service_bluetooth_events(display, vp_map, bt_server):
         elif event == "disconnected":
             print("BT event -> disconnected")
             update_ota_display(display, vp_map, connection_text="DISCONNECTED")
+            if ota_state and ota_state.get("reboot_on_disconnect"):
+                print("BT OTA upload complete and app disconnected -> rebooting")
+                time.sleep_ms(200)
+                machine_reset()
     return handled
 
 
@@ -281,6 +285,7 @@ def service_ble_ota(display, vp_map, bt_server, ota_state):
 
         if command == OTA_BEGIN_COMMAND:
             close_ota_upload(ota_state, remove_partial=True)
+            ota_state["reboot_on_disconnect"] = False
             name = sanitize_ota_filename(payload.get("name"))
             compressed_name = build_compressed_upload_name(name) if name else ""
             size = payload.get("size", 0)
@@ -411,8 +416,7 @@ def service_ble_ota(display, vp_map, bt_server, ota_state):
                 )
             )
             update_ota_display(display, vp_map, progress_text="100%")
-            time.sleep_ms(300)
-            machine_reset()
+            ota_state["reboot_on_disconnect"] = True
     return handled
 
 
@@ -433,6 +437,7 @@ def run_ble_ota_mode():
         "chunk_index": 0,
         "encoding": "",
         "original_size": 0,
+        "reboot_on_disconnect": False,
     }
 
     print("BLE OTA mode start")
@@ -452,7 +457,7 @@ def run_ble_ota_mode():
             if "btn_reset" in decode_buttons(read_hc165()):
                 print("btn_reset pressed in OTA mode -> system reboot")
                 machine_reset()
-            event_activity = service_bluetooth_events(display, vp_map, bt_server)
+            event_activity = service_bluetooth_events(display, vp_map, bt_server, ota_state)
             ota_activity = service_ble_ota(display, vp_map, bt_server, ota_state)
             if event_activity or ota_activity:
                 last_activity_ms = time.ticks_ms()

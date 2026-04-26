@@ -49,6 +49,8 @@ class MqttBridge:
         meta_publish_interval_ms=3600000,
         ping_interval_ms=30000,
         reconnect_delay_ms=5000,
+        max_publish_failures=4,
+        max_connect_failures_before_wifi_reconnect=4,
         wifi_connect_timeout_ms=20000,
         wifi_poll_sleep_ms=300,
         default_display_region=DISPLAY_REGION_DEFAULT,
@@ -61,6 +63,11 @@ class MqttBridge:
         self.meta_publish_interval_ms = meta_publish_interval_ms
         self.ping_interval_ms = ping_interval_ms
         self.reconnect_delay_ms = reconnect_delay_ms
+        self.max_publish_failures = max(1, int(max_publish_failures))
+        self.max_connect_failures_before_wifi_reconnect = max(
+            1,
+            int(max_connect_failures_before_wifi_reconnect),
+        )
         self.wifi_connect_timeout_ms = wifi_connect_timeout_ms
         self.default_display_region = default_display_region
         self.supported = MQTTClient is not None
@@ -84,8 +91,9 @@ class MqttBridge:
         self.pump_override = None
         self.pending_pump_command = None
         self.pending_pump_result = None
-        self.pending_ota_commands = []
         self.pending_force_publish = False
+        self.mqtt_publish_failures = 0
+        self.mqtt_connect_failures = 0
 
     def _text(self, value):
         return str(value if value is not None else "").strip()
@@ -167,14 +175,6 @@ class MqttBridge:
         self.pending_pump_command = None
         return command
 
-    def pop_pending_ota_command(self):
-        if not self.pending_ota_commands:
-            return None
-        return self.pending_ota_commands.pop(0)
-
-    def has_pending_ota_command(self):
-        return bool(self.pending_ota_commands)
-
     def request_publish(self):
         self.pending_force_publish = True
 
@@ -234,10 +234,19 @@ class MqttBridge:
             if isinstance(topic, str):
                 topic = topic.encode("utf-8")
             self.client.publish(topic, body, retain=retain)
+            self.mqtt_publish_failures = 0
             return True
         except Exception as exc:
-            print("MQTT publish failed: {}".format(exc))
-            self._schedule_mqtt_reconnect(self._mqtt_reconnect_delay_ms(exc))
+            self.mqtt_publish_failures += 1
+            print(
+                "MQTT publish failed: count={}/{} error={}".format(
+                    self.mqtt_publish_failures,
+                    self.max_publish_failures,
+                    exc,
+                )
+            )
+            if (not self.wifi.is_connected()) or self.mqtt_publish_failures >= self.max_publish_failures:
+                self._schedule_mqtt_reconnect(self._mqtt_reconnect_delay_ms(exc))
             return False
 
     def _mqtt_errno(self, exc):
@@ -310,7 +319,7 @@ class MqttBridge:
                 self.last_meta_publish_ms = time.ticks_ms()
                 self.last_meta_signature = meta_signature
 
-        if publish_dashboard and success:
+        if publish_dashboard:
             self.last_publish_ms = time.ticks_ms()
             self.pending_force_publish = False
         return success
@@ -330,17 +339,6 @@ class MqttBridge:
             payload["command"] = self._text(command)
         topic = "{}/pico/{}/pump_state".format(self.mqtt_user_id, identity["region_code"])
         return self._publish_json(topic, payload)
-
-    def publish_ota_status(self, config, payload, retain=False):
-        if not self.client:
-            return False
-        identity = self.identity(config)
-        topic = "{}/pico/{}/{}/ota_state".format(
-            self.mqtt_user_id,
-            identity["region_code"],
-            identity["device_code"],
-        )
-        return self._publish_json(topic, payload, retain=retain)
 
     def _parse_pump_command(self, raw_text):
         text = self._text(raw_text)
@@ -428,27 +426,6 @@ class MqttBridge:
             print("MQTT pump_cmd -> {}".format(command if command is not None else "invalid"))
             return
 
-        if topic_name not in ("ota_cmd", "ota"):
-            return
-
-        try:
-            payload = json.loads(msg_text)
-        except Exception as exc:
-            print("MQTT ota decode failed: {}".format(exc))
-            return
-
-        if not isinstance(payload, dict):
-            print("MQTT ota invalid payload")
-            return
-
-        self.pending_ota_commands.append(
-            {
-                "topic": topic_text,
-                "payload": payload,
-            }
-        )
-        print("MQTT ota_cmd queued -> {}".format(self._text(payload.get("cmd"))))
-
     def _schedule_wifi_reconnect(self, delay_ms=None):
         now_ms = time.ticks_ms()
         self._disconnect_mqtt()
@@ -503,13 +480,16 @@ class MqttBridge:
         )
         client.set_callback(self._on_message)
         client.connect(timeout=self.mqtt_connect_timeout_sec)
+        client.set_timeout(self.mqtt_connect_timeout_sec)
+        self.client = client
         client.subscribe("{}/pico/#".format(self.mqtt_user_id).encode("utf-8"))
 
-        self.client = client
         self.last_broker = broker
         self.last_ping_ms = time.ticks_ms()
         self.last_meta_publish_ms = 0
         self.last_meta_signature = ""
+        self.mqtt_publish_failures = 0
+        self.mqtt_connect_failures = 0
         self.pending_force_publish = True
         print(
             "MQTT connected: broker={} region={}".format(
@@ -544,14 +524,22 @@ class MqttBridge:
                 self._connect_mqtt(config)
                 return True
             except Exception as exc:
+                self.mqtt_connect_failures += 1
                 print(
-                    "MQTT connect failed: broker={} region={} error={}".format(
+                    "MQTT connect failed: count={}/{} broker={} region={} error={}".format(
+                        self.mqtt_connect_failures,
+                        self.max_connect_failures_before_wifi_reconnect,
                         broker,
                         identity["region_code"],
                         exc,
                     )
                 )
-                self._schedule_mqtt_reconnect()
+                if self.mqtt_connect_failures >= self.max_connect_failures_before_wifi_reconnect:
+                    print("MQTT connect failed repeatedly -> Wi-Fi reconnect")
+                    self.mqtt_connect_failures = 0
+                    self._schedule_wifi_reconnect()
+                else:
+                    self._schedule_mqtt_reconnect()
                 return False
 
         try:

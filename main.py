@@ -1,4 +1,5 @@
 import time
+from machine import reset as machine_reset
 
 from app import run
 from ble_ota_mode import run_ble_ota_mode
@@ -14,7 +15,13 @@ def should_enter_ble_ota_mode(samples=3, pressed_threshold=2):
     return pressed_count >= pressed_threshold
 
 
-if should_enter_ble_ota_mode():
-    run_ble_ota_mode()
-else:
-    run()
+while True:
+    try:
+        if should_enter_ble_ota_mode():
+            run_ble_ota_mode()
+        else:
+            run()
+    except Exception as exc:
+        print("Main startup/runtime error: {}".format(exc))
+        time.sleep_ms(1000)
+        machine_reset()

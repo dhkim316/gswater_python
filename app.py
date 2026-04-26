@@ -16,6 +16,11 @@ from rf_communication_pico import RFCommunicator
 from rf_packet_parser_pico import receive_and_parse
 from rtc_pico import RTCISL1208
 
+APP_VERSION = "V8.4"
+'''
+송수신 led처리
+ble세팅후 disconnect하면 reset하는 기능 추가
+'''
 
 CONFIG_PATH = "config.txt"
 POLL_MS = 20
@@ -50,7 +55,6 @@ SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
 RF_CHANNEL = 7
-APP_VERSION = "V8.0"
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
@@ -480,18 +484,24 @@ def build_config_snapshot(config):
     return payload
 
 
-def service_bluetooth_events(display, bt_server):
+def service_bluetooth_events(display, bt_server, bluetooth_state=None):
     if not bt_server or not bt_server.enabled or not bt_server.has_event():
         return
 
     while bt_server.has_event():
         event = bt_server.read_event()
         if event == "connected":
+            if bluetooth_state is not None:
+                bluetooth_state["config_changed"] = False
             if display:
                 display.beep_hmi(150)
             print("BT event -> connected")
         elif event == "disconnected":
             print("BT event -> disconnected")
+            if bluetooth_state is not None and bluetooth_state.get("config_changed"):
+                print("BT config changed and disconnected -> system reboot")
+                time.sleep_ms(500)
+                machine_reset()
 
 
 def service_bluetooth_updates(display, vp_map, rf, config, setting_state, bt_server, rtc, rtc_cache=None):
@@ -574,7 +584,8 @@ def get_ip_display_cursor(cursor_index):
 def apply_channel(display, vp_map, rf, config):
     channel = normalize_channel(get_config_value(config, "SET_CH"))
     config["SET_CH"] = [str(channel)]
-    rf.select_channel(channel)
+    if rf:
+        rf.select_channel(channel)
     set_text_field(display, vp_map, "CH_TXT", "CH-{}".format(channel))
     print("SET_CH -> {}".format(channel))
     return channel
@@ -941,6 +952,8 @@ def wait_for_release():
 
 
 def show_page(display, page):
+    if not display:
+        return
     display.set_page(page)
     print("PAGE -> {}".format(page))
 
@@ -986,6 +999,8 @@ def write_unicode_text_field(display, entry, text):
 
 
 def set_text_field(display, vp_map, name, text):
+    if not display:
+        return
     entry = vp_map.get(name)
     if not entry:
         return
@@ -998,6 +1013,8 @@ def set_text_field(display, vp_map, name, text):
 
 
 def set_icon_field(display, vp_map, name, value):
+    if not display:
+        return
     entry = vp_map.get(name)
     if not entry:
         return
@@ -1535,18 +1552,6 @@ def set_panel_relay_with_pump_icon(display, vp_map, ext, state):
     return applied
 
 
-def enter_mqtt_ota_mode(display, vp_map, ext, pending_display_updates, pulse_deadlines):
-    clear_display_queue(pending_display_updates)
-    pulse_deadlines.clear()
-    set_icon_field(display, vp_map, "TX_LED_ICON", 0)
-    set_icon_field(display, vp_map, "RX_LED_ICON", 0)
-    set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
-    if ext:
-        ext.set_relay2_motor(0)
-        ext.set_relay3_alarm(0)
-    print("MQTT OTA mode entered -> normal runtime paused")
-
-
 def update_relays(
     display,
     vp_map,
@@ -1699,13 +1704,35 @@ def build_rf_error_updates(queue_state, error_count):
 
 
 def run():
-    pages = [page for page in load_pages() if 0 <= page <= 3]
-    if not pages:
-        raise RuntimeError("No pages found in {}".format(VP_JSON_PATH))
+    display = None
+    rf = None
+    bt_server = None
+    mqtt_bridge = None
+    ext = None
 
-    vp_map = load_vp_map()
-    config = load_config()
-    save_config(config)
+    try:
+        pages = [page for page in load_pages() if 0 <= page <= 3]
+    except Exception as exc:
+        pages = []
+        print("Page map load failed: {}".format(exc))
+    if not pages:
+        pages = [0]
+        print("No pages found in {} -> using page 0".format(VP_JSON_PATH))
+
+    try:
+        vp_map = load_vp_map()
+    except Exception as exc:
+        vp_map = {}
+        print("VP map load failed: {}".format(exc))
+    try:
+        config = load_config()
+    except Exception as exc:
+        config = build_default_config()
+        print("Config load failed: {}".format(exc))
+    try:
+        save_config(config)
+    except Exception as exc:
+        print("Config save failed: {}".format(exc))
     page_index = 0
     error_count = 0
     last_tank_level = None
@@ -1714,6 +1741,7 @@ def run():
     pending_display_updates = init_display_queue()
     display_cache = {}
     rtc_cache = {"time": None, "next_refresh_ms": 0}
+    bluetooth_state = {"config_changed": False}
     setting_state = init_setting_state()
     previous_pressed = set()
     now_ms = time.ticks_ms()
@@ -1731,23 +1759,38 @@ def run():
     next_clock_update = time.ticks_add(now_ms, CLOCK_UPDATE_MS)
     next_current_update = time.ticks_add(now_ms, CURRENT_UPDATE_MS)
     mqtt_bridge = MqttBridge(mqtt_user_id=MQTT_USER_ID, publish_interval_ms=MQTT_PUBLISH_MS)
-    mqtt_ota = None
-    mqtt_ota_mode = False
 
-    display = DgusControl()
-    rf = RFCommunicator()
-    bt_server = BluetoothConfigServer(BLUETOOTH_DEVICE_NAME)
-    shared_i2c = I2C(0, scl=Pin(21), sda=Pin(20))
     try:
-        rtc = RTCISL1208(i2c=shared_i2c)
+        display = DgusControl()
+    except Exception as exc:
+        display = None
+        print("DGUS init failed: {}".format(exc))
+    try:
+        rf = RFCommunicator()
+    except Exception as exc:
+        rf = None
+        print("RF init failed: {}".format(exc))
+    try:
+        bt_server = BluetoothConfigServer(BLUETOOTH_DEVICE_NAME)
+    except Exception as exc:
+        bt_server = None
+        print("Bluetooth init failed: {}".format(exc))
+    try:
+        shared_i2c = I2C(0, scl=Pin(21), sda=Pin(20))
+    except Exception as exc:
+        shared_i2c = None
+        print("I2C init failed: {}".format(exc))
+    try:
+        rtc = RTCISL1208(i2c=shared_i2c) if shared_i2c else None
     except Exception as exc:
         rtc = None
         print("RTC init failed: {}".format(exc))
     try:
-        ext = GPIOExtender(i2c=shared_i2c)
-        set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
-        ext.set_relay2_motor(0)
-        ext.set_relay3_alarm(0)
+        ext = GPIOExtender(i2c=shared_i2c) if shared_i2c else None
+        if ext:
+            set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
+            ext.set_relay2_motor(0)
+            ext.set_relay3_alarm(0)
     except Exception as exc:
         ext = None
         print("GPIOExtender init failed: {}".format(exc))
@@ -1759,21 +1802,24 @@ def run():
         last_midnight_reset_date = ""
 
     try:
-        apply_channel(display, vp_map, rf, config)
-        show_page(display, pages[page_index])
-        set_text_field(display, vp_map, "VERSION_TXT", APP_VERSION)
-        apply_config_to_display(display, vp_map, config)
-        update_tank_level_display(display, vp_map, last_tank_level, True, display_cache)
-        update_clock_fields(display, vp_map, rtc, display_cache, rtc_cache)
-        update_lte_display(display, vp_map, mqtt_bridge, display_cache)
-        update_current_display(display, vp_map, config, display_cache)
-        update_flow_display(display, vp_map, config, display_cache)
-        update_well_level_display(display, vp_map, display_cache)
+        try:
+            apply_channel(display, vp_map, rf, config)
+            show_page(display, pages[page_index])
+            set_text_field(display, vp_map, "VERSION_TXT", APP_VERSION)
+            apply_config_to_display(display, vp_map, config)
+            update_tank_level_display(display, vp_map, last_tank_level, True, display_cache)
+            update_clock_fields(display, vp_map, rtc, display_cache, rtc_cache)
+            update_lte_display(display, vp_map, mqtt_bridge, display_cache)
+            update_current_display(display, vp_map, config, display_cache)
+            update_flow_display(display, vp_map, config, display_cache)
+            update_well_level_display(display, vp_map, display_cache)
+        except Exception as exc:
+            print("Startup display/setup error: {}".format(exc))
         print("btn_left: previous page, btn_right: next page")
         print("btn_set + btn_up/down: change SET_CH (0~9)")
-        print("page 1: btn_set toggle setting mode, left/right move, up/down edit")
+        print("page 1~3: settings are view-only; update via Bluetooth")
         print("RF polling every {} ms on channel {}".format(RF_POLL_MS, get_config_value(config, "SET_CH")))
-        if bt_server.enabled:
+        if bt_server and bt_server.enabled:
             print("Bluetooth config ready: {}".format(BLUETOOTH_DEVICE_NAME))
             print('BT example: {"key":"SET_STOP_LEVEL_TXT","value":"80"}')
             print('BT RTC sync: {"command":"sync_time","datetime":"2026-03-31 14:25:00"}')
@@ -1790,33 +1836,6 @@ def run():
 
                 now_ms = time.ticks_ms()
                 mqtt_bridge.service(config)
-                if mqtt_ota is None and mqtt_bridge.has_pending_ota_command():
-                    from mqtt_ota import MqttOtaManager
-
-                    mqtt_ota = MqttOtaManager()
-                    print("MQTT OTA manager loaded")
-
-                if mqtt_ota is not None:
-                    mqtt_ota.service(config, mqtt_bridge, now_ms)
-
-                if mqtt_ota is not None and mqtt_ota.is_active():
-                    if not mqtt_ota_mode:
-                        mqtt_ota_mode = True
-                        enter_mqtt_ota_mode(display, vp_map, ext, pending_display_updates, pulse_deadlines)
-                    previous_pressed = pressed_set
-                    time.sleep_ms(POLL_MS)
-                    continue
-
-                if mqtt_ota_mode:
-                    mqtt_ota_mode = False
-                    print("MQTT OTA mode exited -> normal runtime resumed")
-
-                if page_index in SETTING_PAGE_ITEMS:
-                    if handle_setting_page_input(display, vp_map, config, setting_state, page_index, pressed_set, newly_pressed):
-                        previous_pressed = pressed_set
-                        continue
-                elif setting_state["active"]:
-                    exit_setting_mode(display, vp_map, config, setting_state)
 
                 if page_index == 0 and "btn_set" in pressed_set and "btn_enter" in newly_pressed:
                     calibrate_current_zero(display, vp_map, config)
@@ -1841,36 +1860,23 @@ def run():
                 if "btn_left" in newly_pressed:
                     page_index = (page_index - 1) % len(pages)
                     show_page(display, pages[page_index])
+                    apply_config_to_display(display, vp_map, config)
                     previous_pressed = pressed_set
                     continue
 
                 if "btn_right" in newly_pressed:
                     page_index = (page_index + 1) % len(pages)
                     show_page(display, pages[page_index])
+                    apply_config_to_display(display, vp_map, config)
                     previous_pressed = pressed_set
                     continue
 
                 clock_update_due = time.ticks_diff(now_ms, next_clock_update) >= 0
-                service_bluetooth_events(display, bt_server)
+                service_bluetooth_events(display, bt_server, bluetooth_state)
                 if service_bluetooth_updates(display, vp_map, rf, config, setting_state, bt_server, rtc, rtc_cache):
+                    bluetooth_state["config_changed"] = True
                     mqtt_bridge.request_publish()
-                service_setting_blink(display, vp_map, config, setting_state, now_ms)
-                if page_index in SETTING_PAGE_ITEMS and is_setting_idle_timeout(setting_state, now_ms):
-                    exit_setting_mode(display, vp_map, config, setting_state)
-                    page_index = 0
-                    show_page(display, pages[page_index])
-                    apply_config_to_display(display, vp_map, config)
-                    previous_pressed = pressed_set
-                    continue
-                if setting_state["active"]:
-                    comm_failed = False
-                    last_rx_ok_ms = now_ms
-                    next_rf_poll = time.ticks_add(now_ms, RF_POLL_MS)
-                    rf_waiting_response = False
-                    flow_waiting_response = False
-                    next_flow_poll_ms = 0
-                else:
-                    comm_failed = time.ticks_diff(now_ms, last_rx_ok_ms) >= COMM_FAILSAFE_MS
+                comm_failed = time.ticks_diff(now_ms, last_rx_ok_ms) >= COMM_FAILSAFE_MS
                 next_clock_update, next_current_update, pump_active = service_runtime(
                     display,
                     vp_map,
@@ -1943,6 +1949,7 @@ def run():
                     and next_flow_poll_ms
                     and time.ticks_diff(now_ms, next_flow_poll_ms) >= 0
                 ):
+                    start_icon_pulse(display, vp_map, pulse_deadlines, "TX_LED_ICON", 1)
                     print("TX {FL}")
                     rf.send("{FL}")
                     flow_response_due_ms = time.ticks_add(now_ms, FLOW_RESPONSE_WAIT_MS)
@@ -1995,8 +2002,10 @@ def run():
                     print("FL response parsed: pulse={} ton={}".format(flow_pulse, flow_value))
                     if flow_value is not None:
                         update_flow_display(display, vp_map, config, display_cache, flow_value)
+                        start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 2)
                     else:
                         update_flow_display(display, vp_map, config, display_cache, "NO-ANS")
+                        start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
 
                 pending_pump_result = mqtt_bridge.pop_pending_pump_result()
                 if pending_pump_result:
@@ -2046,14 +2055,28 @@ def run():
                 previous_pressed = set()
                 time.sleep_ms(POLL_MS)
     finally:
-        if ext:
-            set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
-            ext.set_relay2_motor(0)
-            ext.set_relay3_alarm(0)
-        if mqtt_bridge:
-            mqtt_bridge._disconnect()
-        rf.close()
-        display.close()
+        try:
+            if ext:
+                set_panel_relay_with_pump_icon(display, vp_map, ext, 0)
+                ext.set_relay2_motor(0)
+                ext.set_relay3_alarm(0)
+        except Exception as exc:
+            print("Shutdown relay cleanup failed: {}".format(exc))
+        try:
+            if mqtt_bridge:
+                mqtt_bridge._disconnect()
+        except Exception as exc:
+            print("Shutdown MQTT cleanup failed: {}".format(exc))
+        try:
+            if rf:
+                rf.close()
+        except Exception as exc:
+            print("Shutdown RF cleanup failed: {}".format(exc))
+        try:
+            if display:
+                display.close()
+        except Exception as exc:
+            print("Shutdown display cleanup failed: {}".format(exc))
 
 
 if __name__ == "__main__":

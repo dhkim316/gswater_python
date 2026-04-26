@@ -31,6 +31,7 @@ class MQTTClient:
         self.user = user
         self.pswd = password
         self.keepalive = keepalive
+        self.timeout = None
         self.lw_topic = None
         self.lw_msg = None
         self.lw_qos = 0
@@ -62,6 +63,7 @@ class MQTTClient:
         self.lw_retain = retain
 
     def connect(self, clean_session=True, timeout=None):
+        self.timeout = timeout
         self.sock = socket.socket()
         self.sock.settimeout(timeout)
         address = socket.getaddrinfo(self.server, self.port)[0][-1]
@@ -112,6 +114,11 @@ class MQTTClient:
         if response[3] != 0:
             raise MQTTException(response[3])
         return response[2] & 1
+
+    def set_timeout(self, timeout):
+        self.timeout = timeout
+        if self.sock:
+            self.sock.settimeout(timeout)
 
     def disconnect(self):
         self.sock.write(b"\xe0\0")
@@ -176,7 +183,6 @@ class MQTTClient:
 
     def wait_msg(self):
         response = self.sock.read(1)
-        self.sock.setblocking(True)
         if response is None:
             return None
         if response == b"":
@@ -214,4 +220,7 @@ class MQTTClient:
 
     def check_msg(self):
         self.sock.setblocking(False)
-        return self.wait_msg()
+        try:
+            return self.wait_msg()
+        finally:
+            self.sock.settimeout(self.timeout)
