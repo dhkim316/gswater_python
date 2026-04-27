@@ -58,8 +58,6 @@ class WifiStationManager:
         if not self.wlan:
             return False
 
-        now_ms = time.ticks_ms()
-        self.wlan.active(True)
         ssid = str(ssid or "").strip()
         password = str(password or "").strip()
 
@@ -69,6 +67,9 @@ class WifiStationManager:
             self.disconnect()
             self.clear_credentials()
             return False
+
+        now_ms = time.ticks_ms()
+        self.wlan.active(True)
 
         if self.wlan.isconnected():
             if self.connecting or self.last_ssid is None:

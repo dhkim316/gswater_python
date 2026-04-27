@@ -45,11 +45,14 @@ class MqttBridge:
         mqtt_port=1883,
         keepalive_sec=60,
         mqtt_connect_timeout_sec=5,
+        mqtt_io_timeout_sec=60,
+        mqtt_operation_timeout_sec=0.2,
         publish_interval_ms=5000,
         meta_publish_interval_ms=3600000,
         ping_interval_ms=30000,
         reconnect_delay_ms=5000,
         max_publish_failures=4,
+        max_service_failures=4,
         max_connect_failures_before_wifi_reconnect=4,
         wifi_connect_timeout_ms=20000,
         wifi_poll_sleep_ms=300,
@@ -59,11 +62,14 @@ class MqttBridge:
         self.mqtt_port = mqtt_port
         self.keepalive_sec = keepalive_sec
         self.mqtt_connect_timeout_sec = mqtt_connect_timeout_sec
+        self.mqtt_io_timeout_sec = mqtt_io_timeout_sec
+        self.mqtt_operation_timeout_sec = mqtt_operation_timeout_sec
         self.publish_interval_ms = publish_interval_ms
         self.meta_publish_interval_ms = meta_publish_interval_ms
         self.ping_interval_ms = ping_interval_ms
         self.reconnect_delay_ms = reconnect_delay_ms
         self.max_publish_failures = max(1, int(max_publish_failures))
+        self.max_service_failures = max(1, int(max_service_failures))
         self.max_connect_failures_before_wifi_reconnect = max(
             1,
             int(max_connect_failures_before_wifi_reconnect),
@@ -94,6 +100,7 @@ class MqttBridge:
         self.pending_force_publish = False
         self.mqtt_publish_failures = 0
         self.mqtt_connect_failures = 0
+        self.mqtt_service_failures = 0
 
     def _text(self, value):
         return str(value if value is not None else "").strip()
@@ -233,6 +240,7 @@ class MqttBridge:
                 body = body.encode("utf-8")
             if isinstance(topic, str):
                 topic = topic.encode("utf-8")
+            self.client.set_timeout(self._operation_timeout(self.mqtt_io_timeout_sec))
             self.client.publish(topic, body, retain=retain)
             self.mqtt_publish_failures = 0
             return True
@@ -266,6 +274,22 @@ class MqttBridge:
             return 0
         return self.reconnect_delay_ms
 
+    def _operation_timeout(self, configured_timeout):
+        if configured_timeout is None:
+            return self.mqtt_operation_timeout_sec
+        if self.mqtt_operation_timeout_sec is None:
+            return configured_timeout
+        try:
+            configured = float(configured_timeout)
+            operation = float(self.mqtt_operation_timeout_sec)
+        except (TypeError, ValueError):
+            return configured_timeout
+        if configured <= 0:
+            return configured_timeout
+        if operation <= 0:
+            return configured_timeout
+        return min(configured, operation)
+
     def _legacy_payload(self, identity, topic_name, timestamp, value):
         return {
             "region": identity["display_region"],
@@ -294,6 +318,7 @@ class MqttBridge:
                 "timestamp": timestamp,
                 "data": fast_data,
             }
+            print("MQTT publish dashboard_state raw={}".format(json.dumps(dashboard_payload)))
             success = self._publish_json(topic_prefix + "dashboard_state", dashboard_payload) and success
             print(
                 "MQTT publish dashboard_state: topic={} ok={}".format(
@@ -307,6 +332,7 @@ class MqttBridge:
                 "timestamp": timestamp,
                 "data": slow_data,
             }
+            print("MQTT publish dashboard_meta raw={}".format(json.dumps(meta_payload)))
             meta_ok = self._publish_json(topic_prefix + "dashboard_meta", meta_payload, retain=True)
             success = meta_ok and success
             print(
@@ -479,10 +505,11 @@ class MqttBridge:
             keepalive=self.keepalive_sec,
         )
         client.set_callback(self._on_message)
-        client.connect(timeout=self.mqtt_connect_timeout_sec)
-        client.set_timeout(self.mqtt_connect_timeout_sec)
+        client.connect(timeout=self._operation_timeout(self.mqtt_connect_timeout_sec))
+        client.set_timeout(self._operation_timeout(self.mqtt_connect_timeout_sec))
         self.client = client
         client.subscribe("{}/pico/#".format(self.mqtt_user_id).encode("utf-8"))
+        client.set_timeout(self._operation_timeout(self.mqtt_io_timeout_sec))
 
         self.last_broker = broker
         self.last_ping_ms = time.ticks_ms()
@@ -490,6 +517,7 @@ class MqttBridge:
         self.last_meta_signature = ""
         self.mqtt_publish_failures = 0
         self.mqtt_connect_failures = 0
+        self.mqtt_service_failures = 0
         self.pending_force_publish = True
         print(
             "MQTT connected: broker={} region={}".format(
@@ -497,6 +525,45 @@ class MqttBridge:
                 self.identity_cache["region_code"],
             )
         )
+
+    def _service_mqtt_receive(self):
+        operation = self.client.check_msg()
+        if operation is not None:
+            self.mqtt_service_failures = 0
+        return operation
+
+    def _service_mqtt_ping(self, now_ms):
+        if time.ticks_diff(now_ms, self.last_ping_ms) < self.ping_interval_ms:
+            return
+        self.client.set_timeout(self._operation_timeout(self.mqtt_io_timeout_sec))
+        self.client.ping()
+        self.last_ping_ms = now_ms
+
+    def _handle_mqtt_service_error(self, label, exc):
+        self.mqtt_service_failures += 1
+        err = self._mqtt_errno(exc)
+        if self._is_mqtt_connection_error(exc):
+            print(
+                "MQTT {} disconnected: count={}/{} errno={} error={}".format(
+                    label,
+                    self.mqtt_service_failures,
+                    self.max_service_failures,
+                    err,
+                    exc,
+                )
+            )
+        else:
+            print(
+                "MQTT {} failed: count={}/{} error={}".format(
+                    label,
+                    self.mqtt_service_failures,
+                    self.max_service_failures,
+                    exc,
+                )
+            )
+        if self.mqtt_service_failures >= self.max_service_failures:
+            self.mqtt_service_failures = 0
+            self._schedule_mqtt_reconnect(self._mqtt_reconnect_delay_ms(exc))
 
     def service(self, config):
         if not self.supported:
@@ -543,17 +610,15 @@ class MqttBridge:
                 return False
 
         try:
-            self.client.check_msg()
-            now_ms = time.ticks_ms()
-            if time.ticks_diff(now_ms, self.last_ping_ms) >= self.ping_interval_ms:
-                self.client.ping()
-                self.last_ping_ms = now_ms
-            return True
+            self._service_mqtt_receive()
         except Exception as exc:
-            err = self._mqtt_errno(exc)
-            if self._is_mqtt_connection_error(exc):
-                print("MQTT disconnected: errno={} error={}".format(err, exc))
-            else:
-                print("MQTT service failed: {}".format(exc))
-            self._schedule_mqtt_reconnect(self._mqtt_reconnect_delay_ms(exc))
+            self._handle_mqtt_service_error("receive", exc)
             return False
+
+        try:
+            self._service_mqtt_ping(time.ticks_ms())
+        except Exception as exc:
+            self._handle_mqtt_service_error("ping", exc)
+            return False
+
+        return True

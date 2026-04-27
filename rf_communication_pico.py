@@ -34,6 +34,18 @@ class RFCommunicator:
         else:
             return self.uart.read()
 
+    def any(self):
+        try:
+            return self.uart.any()
+        except AttributeError:
+            return 0
+
+    def receive_available(self):
+        count = self.any()
+        if count:
+            return self.receive(count)
+        return None
+
     def close(self):
         self.uart.deinit()
 

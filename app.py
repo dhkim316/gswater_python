@@ -13,13 +13,14 @@ from dgus_vp_registry import VP_JSON_PATH, load_config_metadata, load_pages as l
 from gpio_extender_pico import GPIOExtender
 from mqtt_bridge_pico import MqttBridge
 from rf_communication_pico import RFCommunicator
-from rf_packet_parser_pico import receive_and_parse
+from rf_packet_parser_pico import extract_valid_frame, parse_frame
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V8.4"
+APP_VERSION = "V8.5"
 '''
 송수신 led처리
 ble세팅후 disconnect하면 reset하는 기능 추가
+rf통신보강(수신 즉시처리방식, mqtt죽어도 펜딩되지 않도록)
 '''
 
 CONFIG_PATH = "config.txt"
@@ -60,6 +61,7 @@ WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
 MQTT_USER_ID = "1"
 MQTT_PUBLISH_MS = 5000
+MQTT_RF_GUARD_MS = 800
 RTC_CACHE_MS = CLOCK_UPDATE_MS
 
 CONFIG_METADATA = load_config_metadata()
@@ -591,12 +593,40 @@ def apply_channel(display, vp_map, rf, config):
     return channel
 
 
+def rf_timing_needs_priority(
+    now_ms,
+    next_rf_poll,
+    rf_waiting_response,
+    next_flow_poll_ms,
+    flow_waiting_response,
+    guard_ms=MQTT_RF_GUARD_MS,
+):
+    if rf_waiting_response or flow_waiting_response:
+        return True
+
+    if time.ticks_diff(next_rf_poll, now_ms) <= guard_ms:
+        return True
+
+    if next_flow_poll_ms and time.ticks_diff(next_flow_poll_ms, now_ms) <= guard_ms:
+        return True
+
+    return False
+
+
 def apply_config_to_display(display, vp_map, config):
     for name in CONFIG_TEXT_FIELDS:
         apply_config_value(display, vp_map, config, name)
 
     for name in CONFIG_ICON_FIELDS:
         apply_config_value(display, vp_map, config, name)
+
+
+def apply_page_config_to_display(display, vp_map, config, page):
+    for name, entry in vp_map.items():
+        if entry.get("page") != page:
+            continue
+        if name in CONFIG_TEXT_FIELDS or name in CONFIG_ICON_FIELDS:
+            apply_config_value(display, vp_map, config, name)
 
 
 def apply_config_value(display, vp_map, config, key):
@@ -1238,6 +1268,31 @@ def parse_flow_response(raw_packet):
     return None
 
 
+def append_rf_available(rf, rx_buffer, max_buffer_size=64):
+    if not rf:
+        return rx_buffer, False
+
+    try:
+        chunk = rf.receive_available()
+    except AttributeError:
+        chunk = rf.receive()
+
+    if not chunk:
+        return rx_buffer, False
+
+    rx_buffer = (rx_buffer or b"") + chunk
+    if len(rx_buffer) > max_buffer_size:
+        rx_buffer = rx_buffer[-max_buffer_size:]
+    return rx_buffer, True
+
+
+def parse_level_response_buffer(rx_buffer):
+    frame = extract_valid_frame(rx_buffer)
+    if not frame:
+        return None
+    return parse_frame(frame)
+
+
 def calibrate_current_zero(display, vp_map, config):
     current = read_current_value()
     if current is None:
@@ -1408,18 +1463,34 @@ def get_pressure_percent(sensor_value):
     return find_closest_index(PRESSURE_VALUES, target)
 
 
-def determine_level(parsed):
+def get_ottugi_model(config=None):
+    model = get_config_value(config or {}, "SET_OTTUGI_MODEL").strip().upper()
+    if model == "10K":
+        return "10K"
+    return "3_3K"
+
+
+def determine_level(parsed, config=None):
     try:
         value = int(parsed["sensor_value"])
     except (TypeError, ValueError):
         return "00"
 
     if parsed["sensor_type"] == "Q":
+        if get_ottugi_model(config) == "10K":
+            if value >= 195:
+                return "00"
+            if value >= 135:
+                return "50"
+            if value >= 55:
+                return "70"
+            return "90"
+
         if value >= 195:
             return "00"
-        if value >= 135:
+        if value >= 35:
             return "50"
-        if value >= 55:
+        if value >= 15:
             return "70"
         return "90"
 
@@ -1665,8 +1736,8 @@ def update_clock_fields(display, vp_map, rtc=None, display_cache=None, rtc_cache
         set_text_field_if_changed(display, vp_map, display_cache, "DATE_TIME_TXT", value)
 
 
-def build_rf_display_updates(queue_state, parsed):
-    level = determine_level(parsed)
+def build_rf_display_updates(queue_state, parsed, config=None):
+    level = determine_level(parsed, config)
     battery_icon = max(0, min(2, int(parsed["battery"]) - 1))
     solar_icon = 1 if parsed["solar"] == "1" else 0
     sensor_icon = 1 if parsed["sensor_type"] == "Q" else 0
@@ -1750,9 +1821,11 @@ def run():
     next_rf_poll = now_ms
     rf_response_due_ms = 0
     rf_waiting_response = False
+    rf_rx_buffer = b""
     next_flow_poll_ms = 0
     flow_response_due_ms = 0
     flow_waiting_response = False
+    flow_rx_buffer = b""
     flow_value = None
     last_parsed = None
     flow_meter_enabled = get_config_value(config, "SET_INSTALL_FLOW_METER_ICON") == "1"
@@ -1835,7 +1908,14 @@ def run():
                     machine_reset()
 
                 now_ms = time.ticks_ms()
-                mqtt_bridge.service(config)
+                if not rf_timing_needs_priority(
+                    now_ms,
+                    next_rf_poll,
+                    rf_waiting_response,
+                    next_flow_poll_ms,
+                    flow_waiting_response,
+                ):
+                    mqtt_bridge.service(config)
 
                 if page_index == 0 and "btn_set" in pressed_set and "btn_enter" in newly_pressed:
                     calibrate_current_zero(display, vp_map, config)
@@ -1860,14 +1940,14 @@ def run():
                 if "btn_left" in newly_pressed:
                     page_index = (page_index - 1) % len(pages)
                     show_page(display, pages[page_index])
-                    apply_config_to_display(display, vp_map, config)
+                    apply_page_config_to_display(display, vp_map, config, pages[page_index])
                     previous_pressed = pressed_set
                     continue
 
                 if "btn_right" in newly_pressed:
                     page_index = (page_index + 1) % len(pages)
                     show_page(display, pages[page_index])
-                    apply_config_to_display(display, vp_map, config)
+                    apply_page_config_to_display(display, vp_map, config, pages[page_index])
                     previous_pressed = pressed_set
                     continue
 
@@ -1952,6 +2032,7 @@ def run():
                     start_icon_pulse(display, vp_map, pulse_deadlines, "TX_LED_ICON", 1)
                     print("TX {FL}")
                     rf.send("{FL}")
+                    flow_rx_buffer = b""
                     flow_response_due_ms = time.ticks_add(now_ms, FLOW_RESPONSE_WAIT_MS)
                     flow_waiting_response = True
                     next_flow_poll_ms = 0
@@ -1968,6 +2049,7 @@ def run():
                     gc.collect()
                     print("TX {SA}")
                     rf.send("{SA}")
+                    rf_rx_buffer = b""
                     rf_response_due_ms = time.ticks_add(now_ms, RF_RESPONSE_WAIT_MS)
                     rf_waiting_response = True
                     if get_config_value(config, "SET_INSTALL_FLOW_METER_ICON") == "1":
@@ -1975,39 +2057,62 @@ def run():
                     else:
                         next_flow_poll_ms = 0
 
-                if rf_waiting_response and time.ticks_diff(now_ms, rf_response_due_ms) >= 0:
-                    rf_waiting_response = False
-                    parsed = receive_and_parse(rf)
+                now_ms = time.ticks_ms()
+                if rf_waiting_response:
+                    rf_rx_buffer, _ = append_rf_available(rf, rf_rx_buffer)
+                    parsed = parse_level_response_buffer(rf_rx_buffer)
+                    rf_timed_out = time.ticks_diff(now_ms, rf_response_due_ms) >= 0
 
-                    if parsed:
-                        error_count = 0
-                        last_rx_ok_ms = time.ticks_ms()
-                        last_parsed = parsed
-                        build_rf_display_updates(pending_display_updates, parsed)
-                        last_tank_level = parse_int_or_none(determine_level(parsed))
-                        start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 2)
-                    else:
-                        error_count += 1
-                        build_rf_error_updates(pending_display_updates, error_count)
-                        start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
+                    if parsed or rf_timed_out:
+                        rf_waiting_response = False
+                        rf_rx_buffer = b""
 
-                    gc.collect()
+                        if parsed:
+                            error_count = 0
+                            last_rx_ok_ms = time.ticks_ms()
+                            last_parsed = parsed
+                            build_rf_display_updates(pending_display_updates, parsed, config)
+                            last_tank_level = parse_int_or_none(determine_level(parsed, config))
+                            start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 2)
+                        else:
+                            error_count += 1
+                            build_rf_error_updates(pending_display_updates, error_count)
+                            start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
 
-                if flow_waiting_response and time.ticks_diff(now_ms, flow_response_due_ms) >= 0:
-                    flow_waiting_response = False
-                    flow_raw = rf.receive()
-                    print("FL response raw: {}".format(flow_raw))
-                    flow_pulse = parse_flow_response(flow_raw)
-                    flow_value = convert_flow_pulse_to_ton(flow_pulse)
-                    print("FL response parsed: pulse={} ton={}".format(flow_pulse, flow_value))
-                    if flow_value is not None:
-                        update_flow_display(display, vp_map, config, display_cache, flow_value)
-                        start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 2)
-                    else:
-                        update_flow_display(display, vp_map, config, display_cache, "NO-ANS")
-                        start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
+                        gc.collect()
 
-                pending_pump_result = mqtt_bridge.pop_pending_pump_result()
+                now_ms = time.ticks_ms()
+                if flow_waiting_response:
+                    flow_rx_buffer, _ = append_rf_available(rf, flow_rx_buffer)
+                    flow_pulse = parse_flow_response(flow_rx_buffer)
+                    flow_timed_out = time.ticks_diff(now_ms, flow_response_due_ms) >= 0
+
+                    if flow_pulse is not None or flow_timed_out:
+                        flow_waiting_response = False
+                        flow_raw = flow_rx_buffer
+                        flow_rx_buffer = b""
+                        print("FL response raw: {}".format(flow_raw))
+                        flow_value = convert_flow_pulse_to_ton(flow_pulse)
+                        print("FL response parsed: pulse={} ton={}".format(flow_pulse, flow_value))
+                        if flow_value is not None:
+                            update_flow_display(display, vp_map, config, display_cache, flow_value)
+                            start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 2)
+                        else:
+                            update_flow_display(display, vp_map, config, display_cache, "NO-ANS")
+                            start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
+
+                now_ms = time.ticks_ms()
+                mqtt_work_allowed = not rf_timing_needs_priority(
+                    now_ms,
+                    next_rf_poll,
+                    rf_waiting_response,
+                    next_flow_poll_ms,
+                    flow_waiting_response,
+                )
+
+                pending_pump_result = None
+                if mqtt_work_allowed:
+                    pending_pump_result = mqtt_bridge.pop_pending_pump_result()
                 if pending_pump_result:
                     pending_pump_command = mqtt_bridge.pop_pending_pump_command()
                     snapshot = build_dashboard_snapshot(
@@ -2032,7 +2137,16 @@ def run():
                     )
                     mqtt_bridge.publish_runtime(config, snapshot)
 
-                if mqtt_bridge.should_publish(now_ms):
+                now_ms = time.ticks_ms()
+                mqtt_work_allowed = not rf_timing_needs_priority(
+                    now_ms,
+                    next_rf_poll,
+                    rf_waiting_response,
+                    next_flow_poll_ms,
+                    flow_waiting_response,
+                )
+
+                if mqtt_work_allowed and mqtt_bridge.should_publish(now_ms):
                     snapshot = build_dashboard_snapshot(
                         config,
                         rtc,
