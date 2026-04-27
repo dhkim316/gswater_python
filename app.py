@@ -13,14 +13,14 @@ from dgus_vp_registry import VP_JSON_PATH, load_config_metadata, load_pages as l
 from gpio_extender_pico import GPIOExtender
 from mqtt_bridge_pico import MqttBridge
 from rf_communication_pico import RFCommunicator
-from rf_packet_parser_pico import extract_valid_frame, parse_frame
+from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V8.5"
+APP_VERSION = "V8.6"
 '''
 송수신 led처리
 ble세팅후 disconnect하면 reset하는 기능 추가
-rf통신보강(수신 즉시처리방식, mqtt죽어도 펜딩되지 않도록)
+rf통신보강(수신 thread처리, mqtt죽어도 펜딩되지 않도록)
 '''
 
 CONFIG_PATH = "config.txt"
@@ -61,7 +61,6 @@ WELL_LEVEL_ADC = ADC(Pin(27))
 BLUETOOTH_DEVICE_NAME = "GSWater"
 MQTT_USER_ID = "1"
 MQTT_PUBLISH_MS = 5000
-MQTT_RF_GUARD_MS = 800
 RTC_CACHE_MS = CLOCK_UPDATE_MS
 
 CONFIG_METADATA = load_config_metadata()
@@ -591,26 +590,6 @@ def apply_channel(display, vp_map, rf, config):
     set_text_field(display, vp_map, "CH_TXT", "CH-{}".format(channel))
     print("SET_CH -> {}".format(channel))
     return channel
-
-
-def rf_timing_needs_priority(
-    now_ms,
-    next_rf_poll,
-    rf_waiting_response,
-    next_flow_poll_ms,
-    flow_waiting_response,
-    guard_ms=MQTT_RF_GUARD_MS,
-):
-    if rf_waiting_response or flow_waiting_response:
-        return True
-
-    if time.ticks_diff(next_rf_poll, now_ms) <= guard_ms:
-        return True
-
-    if next_flow_poll_ms and time.ticks_diff(next_flow_poll_ms, now_ms) <= guard_ms:
-        return True
-
-    return False
 
 
 def apply_config_to_display(display, vp_map, config):
@@ -1248,51 +1227,6 @@ def update_well_level_display(display, vp_map, display_cache=None):
         set_text_field_if_changed(display, vp_map, display_cache, "WELL_LEVEL_TXT", value)
 
 
-def parse_flow_response(raw_packet):
-    if not raw_packet or len(raw_packet) < 8:
-        return None
-
-    start = len(raw_packet) - 8
-    while start >= 0:
-        frame = raw_packet[start:start + 8]
-        payload = frame[:7]
-        checksum = frame[7]
-
-        if payload[:1] == b"{" and payload[6:7] == b"}":
-            digits = payload[1:6]
-            if all(48 <= value <= 57 for value in digits):
-                if (sum(payload) & 0xFF) == checksum:
-                    return digits.decode("ascii")
-        start -= 1
-
-    return None
-
-
-def append_rf_available(rf, rx_buffer, max_buffer_size=64):
-    if not rf:
-        return rx_buffer, False
-
-    try:
-        chunk = rf.receive_available()
-    except AttributeError:
-        chunk = rf.receive()
-
-    if not chunk:
-        return rx_buffer, False
-
-    rx_buffer = (rx_buffer or b"") + chunk
-    if len(rx_buffer) > max_buffer_size:
-        rx_buffer = rx_buffer[-max_buffer_size:]
-    return rx_buffer, True
-
-
-def parse_level_response_buffer(rx_buffer):
-    frame = extract_valid_frame(rx_buffer)
-    if not frame:
-        return None
-    return parse_frame(frame)
-
-
 def calibrate_current_zero(display, vp_map, config):
     current = read_current_value()
     if current is None:
@@ -1580,7 +1514,7 @@ def build_dashboard_snapshot(config, rtc, mqtt_bridge, parsed, tank_level, flow_
     return {
         "timestamp": build_iso_timestamp(rtc, rtc_cache, now_ms, False),
         "data": data,
-        "publish_dashboard": parsed is not None,
+        "publish_dashboard": True,
     }
 
 
@@ -1777,6 +1711,7 @@ def build_rf_error_updates(queue_state, error_count):
 def run():
     display = None
     rf = None
+    rf_receiver = None
     bt_server = None
     mqtt_bridge = None
     ext = None
@@ -1821,11 +1756,9 @@ def run():
     next_rf_poll = now_ms
     rf_response_due_ms = 0
     rf_waiting_response = False
-    rf_rx_buffer = b""
     next_flow_poll_ms = 0
     flow_response_due_ms = 0
     flow_waiting_response = False
-    flow_rx_buffer = b""
     flow_value = None
     last_parsed = None
     flow_meter_enabled = get_config_value(config, "SET_INSTALL_FLOW_METER_ICON") == "1"
@@ -1840,8 +1773,14 @@ def run():
         print("DGUS init failed: {}".format(exc))
     try:
         rf = RFCommunicator()
+        rf_receiver = RFReceiveThread(rf)
+        if rf_receiver.start():
+            print("RF receive thread started")
+        else:
+            print("RF receive thread unavailable -> using main-loop polling fallback")
     except Exception as exc:
         rf = None
+        rf_receiver = None
         print("RF init failed: {}".format(exc))
     try:
         bt_server = BluetoothConfigServer(BLUETOOTH_DEVICE_NAME)
@@ -1908,14 +1847,7 @@ def run():
                     machine_reset()
 
                 now_ms = time.ticks_ms()
-                if not rf_timing_needs_priority(
-                    now_ms,
-                    next_rf_poll,
-                    rf_waiting_response,
-                    next_flow_poll_ms,
-                    flow_waiting_response,
-                ):
-                    mqtt_bridge.service(config)
+                mqtt_bridge.service(config)
 
                 if page_index == 0 and "btn_set" in pressed_set and "btn_enter" in newly_pressed:
                     calibrate_current_zero(display, vp_map, config)
@@ -2031,8 +1963,9 @@ def run():
                 ):
                     start_icon_pulse(display, vp_map, pulse_deadlines, "TX_LED_ICON", 1)
                     print("TX {FL}")
+                    if rf_receiver:
+                        rf_receiver.begin_flow()
                     rf.send("{FL}")
-                    flow_rx_buffer = b""
                     flow_response_due_ms = time.ticks_add(now_ms, FLOW_RESPONSE_WAIT_MS)
                     flow_waiting_response = True
                     next_flow_poll_ms = 0
@@ -2048,8 +1981,9 @@ def run():
                     start_icon_pulse(display, vp_map, pulse_deadlines, "TX_LED_ICON", 1)
                     gc.collect()
                     print("TX {SA}")
+                    if rf_receiver:
+                        rf_receiver.begin_level()
                     rf.send("{SA}")
-                    rf_rx_buffer = b""
                     rf_response_due_ms = time.ticks_add(now_ms, RF_RESPONSE_WAIT_MS)
                     rf_waiting_response = True
                     if get_config_value(config, "SET_INSTALL_FLOW_METER_ICON") == "1":
@@ -2057,15 +1991,21 @@ def run():
                     else:
                         next_flow_poll_ms = 0
 
+                if rf_receiver and not rf_receiver.started:
+                    rf_receiver.service_once()
+                rf_thread_result = rf_receiver.pop_result() if rf_receiver else None
+
                 now_ms = time.ticks_ms()
                 if rf_waiting_response:
-                    rf_rx_buffer, _ = append_rf_available(rf, rf_rx_buffer)
-                    parsed = parse_level_response_buffer(rf_rx_buffer)
+                    parsed = None
+                    if rf_thread_result and rf_thread_result.get("mode") == "level":
+                        parsed = rf_thread_result.get("parsed")
                     rf_timed_out = time.ticks_diff(now_ms, rf_response_due_ms) >= 0
 
                     if parsed or rf_timed_out:
                         rf_waiting_response = False
-                        rf_rx_buffer = b""
+                        if (not parsed) and rf_timed_out and rf_receiver:
+                            rf_receiver.cancel()
 
                         if parsed:
                             error_count = 0
@@ -2083,14 +2023,17 @@ def run():
 
                 now_ms = time.ticks_ms()
                 if flow_waiting_response:
-                    flow_rx_buffer, _ = append_rf_available(rf, flow_rx_buffer)
-                    flow_pulse = parse_flow_response(flow_rx_buffer)
+                    flow_pulse = None
+                    flow_raw = b""
+                    if rf_thread_result and rf_thread_result.get("mode") == "flow":
+                        flow_pulse = rf_thread_result.get("flow_pulse")
+                        flow_raw = rf_thread_result.get("raw") or b""
                     flow_timed_out = time.ticks_diff(now_ms, flow_response_due_ms) >= 0
 
                     if flow_pulse is not None or flow_timed_out:
                         flow_waiting_response = False
-                        flow_raw = flow_rx_buffer
-                        flow_rx_buffer = b""
+                        if flow_pulse is None and flow_timed_out and rf_receiver:
+                            rf_receiver.cancel()
                         print("FL response raw: {}".format(flow_raw))
                         flow_value = convert_flow_pulse_to_ton(flow_pulse)
                         print("FL response parsed: pulse={} ton={}".format(flow_pulse, flow_value))
@@ -2102,17 +2045,7 @@ def run():
                             start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
 
                 now_ms = time.ticks_ms()
-                mqtt_work_allowed = not rf_timing_needs_priority(
-                    now_ms,
-                    next_rf_poll,
-                    rf_waiting_response,
-                    next_flow_poll_ms,
-                    flow_waiting_response,
-                )
-
-                pending_pump_result = None
-                if mqtt_work_allowed:
-                    pending_pump_result = mqtt_bridge.pop_pending_pump_result()
+                pending_pump_result = mqtt_bridge.pop_pending_pump_result()
                 if pending_pump_result:
                     pending_pump_command = mqtt_bridge.pop_pending_pump_command()
                     snapshot = build_dashboard_snapshot(
@@ -2138,15 +2071,7 @@ def run():
                     mqtt_bridge.publish_runtime(config, snapshot)
 
                 now_ms = time.ticks_ms()
-                mqtt_work_allowed = not rf_timing_needs_priority(
-                    now_ms,
-                    next_rf_poll,
-                    rf_waiting_response,
-                    next_flow_poll_ms,
-                    flow_waiting_response,
-                )
-
-                if mqtt_work_allowed and mqtt_bridge.should_publish(now_ms):
+                if mqtt_bridge.should_publish(now_ms):
                     snapshot = build_dashboard_snapshot(
                         config,
                         rtc,
@@ -2181,6 +2106,11 @@ def run():
                 mqtt_bridge._disconnect()
         except Exception as exc:
             print("Shutdown MQTT cleanup failed: {}".format(exc))
+        try:
+            if rf_receiver:
+                rf_receiver.stop()
+        except Exception as exc:
+            print("Shutdown RF receive thread cleanup failed: {}".format(exc))
         try:
             if rf:
                 rf.close()
