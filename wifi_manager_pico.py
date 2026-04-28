@@ -16,6 +16,12 @@ class WifiStationManager:
         self.connect_timeout_ms = connect_timeout_ms
         self.supported = network is not None
         self.wlan = network.WLAN(network.STA_IF) if self.supported else None
+        if self.wlan:
+            try:
+                self.wlan.active(False)
+                self.wlan.active(True)
+            except Exception as exc:
+                print("Wi-Fi interface reset failed: {}".format(exc))
         self.next_reconnect_ms = 0
         self.connect_started_ms = 0
         self.connecting = False

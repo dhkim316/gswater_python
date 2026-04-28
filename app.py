@@ -16,13 +16,14 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V8.8"
+APP_VERSION = "V8.9"
 '''
 송수신 led처리
 ble세팅후 disconnect하면 reset하는 기능 추가
 rf통신보강(수신 thread처리, mqtt죽어도 펜딩되지 않도록)
 MQTT 연결 후 30초마다 PINGREQ 처리
 관정수위 미연결시 ....표시, 마력 8자리로 표시
+wifi 초기화 추가
 '''
 
 CONFIG_PATH = "config.txt"
