@@ -50,6 +50,7 @@ class MqttBridge:
         publish_interval_ms=5000,
         meta_publish_interval_ms=3600000,
         ping_interval_ms=30000,
+        ping_response_timeout_ms=15000,
         reconnect_delay_ms=5000,
         max_publish_failures=4,
         max_service_failures=4,
@@ -67,6 +68,7 @@ class MqttBridge:
         self.publish_interval_ms = publish_interval_ms
         self.meta_publish_interval_ms = meta_publish_interval_ms
         self.ping_interval_ms = ping_interval_ms
+        self.ping_response_timeout_ms = ping_response_timeout_ms
         self.reconnect_delay_ms = reconnect_delay_ms
         self.max_publish_failures = max(1, int(max_publish_failures))
         self.max_service_failures = max(1, int(max_service_failures))
@@ -86,6 +88,8 @@ class MqttBridge:
         self.last_publish_ms = 0
         self.last_meta_publish_ms = 0
         self.last_ping_ms = 0
+        self.ping_sent_ms = 0
+        self.awaiting_pingresp = False
         self.last_broker = ""
         self.last_meta_signature = ""
         self.identity_cache = {
@@ -470,6 +474,8 @@ class MqttBridge:
             except Exception:
                 pass
         self.client = None
+        self.ping_sent_ms = 0
+        self.awaiting_pingresp = False
 
     def _disconnect(self):
         self._disconnect_mqtt()
@@ -513,6 +519,8 @@ class MqttBridge:
 
         self.last_broker = broker
         self.last_ping_ms = time.ticks_ms()
+        self.ping_sent_ms = 0
+        self.awaiting_pingresp = False
         self.last_meta_publish_ms = 0
         self.last_meta_signature = ""
         self.mqtt_publish_failures = 0
@@ -528,16 +536,25 @@ class MqttBridge:
 
     def _service_mqtt_receive(self):
         operation = self.client.check_msg()
+        if operation == 0xD0:
+            self.awaiting_pingresp = False
+            self.ping_sent_ms = 0
         if operation is not None:
             self.mqtt_service_failures = 0
         return operation
 
     def _service_mqtt_ping(self, now_ms):
+        if self.awaiting_pingresp:
+            if time.ticks_diff(now_ms, self.ping_sent_ms) >= self.ping_response_timeout_ms:
+                raise OSError(MQTT_ERR_TIMEDOUT)
+            return
         if time.ticks_diff(now_ms, self.last_ping_ms) < self.ping_interval_ms:
             return
         self.client.set_timeout(self._operation_timeout(self.mqtt_io_timeout_sec))
         self.client.ping()
         self.last_ping_ms = now_ms
+        self.ping_sent_ms = now_ms
+        self.awaiting_pingresp = True
 
     def _handle_mqtt_service_error(self, label, exc):
         self.mqtt_service_failures += 1

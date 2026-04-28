@@ -190,7 +190,7 @@ class MQTTClient:
         if response == b"\xd0":
             size = self.sock.read(1)[0]
             assert size == 0
-            return None
+            return 0xD0
 
         operation = response[0]
         if operation & 0xF0 != 0x30:
