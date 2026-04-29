@@ -24,6 +24,7 @@ rf통신보강(수신 thread처리, mqtt죽어도 펜딩되지 않도록)
 MQTT 연결 후 30초마다 PINGREQ 처리
 관정수위 미연결시 ....표시, 마력 8자리로 표시
 wifi 초기화 추가
+filter제어 입력 추가
 '''
 
 CONFIG_PATH = "config.txt"
