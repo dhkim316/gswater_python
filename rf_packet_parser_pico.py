@@ -110,6 +110,7 @@ def parse_frame(frame):
         "raw_frame": frame,
         "raw_text": text,
         "address": address,
+        "operation_mode_flag": safe_ascii_decode(frame[1:2]),
         "sensor_type": sensor_type,
         "version": version,
         "tank_version": text[0:2],

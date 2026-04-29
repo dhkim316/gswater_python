@@ -16,7 +16,7 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V8.9"
+APP_VERSION = "V9.0"
 '''
 송수신 led처리
 ble세팅후 disconnect하면 reset하는 기능 추가
@@ -2014,6 +2014,9 @@ def run():
                             error_count = 0
                             last_rx_ok_ms = time.ticks_ms()
                             last_parsed = parsed
+                            if mqtt_bridge.apply_rf_operation_mode(parsed.get("operation_mode_flag")):
+                                pump_active = True
+                                pump_state["active"] = True
                             build_rf_display_updates(pending_display_updates, parsed, config)
                             last_tank_level = parse_int_or_none(determine_level(parsed, config))
                             start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 2)

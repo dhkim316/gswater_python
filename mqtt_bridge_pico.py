@@ -99,6 +99,8 @@ class MqttBridge:
         }
         self.pump_control_mode = "auto"
         self.pump_override = None
+        self.rf_previous_pump_control_mode = None
+        self.rf_previous_pump_override = None
         self.pending_pump_command = None
         self.pending_pump_result = None
         self.pending_force_publish = False
@@ -175,6 +177,38 @@ class MqttBridge:
 
     def get_pump_control_mode(self):
         return self.pump_control_mode
+
+    def apply_rf_operation_mode(self, mode_flag):
+        if mode_flag == "0":
+            changed = self.pump_control_mode != "manual" or self.pump_override != "on"
+            if self.rf_previous_pump_control_mode is None:
+                self.rf_previous_pump_control_mode = self.pump_control_mode
+                self.rf_previous_pump_override = self.pump_override
+            self.pump_control_mode = "manual"
+            self.pump_override = "on"
+            if changed:
+                self.pending_force_publish = True
+                print("RF operation mode -> manual/on")
+            return changed
+
+        if mode_flag == "1":
+            if self.rf_previous_pump_control_mode is None:
+                return False
+
+            changed = (
+                self.pump_control_mode != self.rf_previous_pump_control_mode
+                or self.pump_override != self.rf_previous_pump_override
+            )
+            self.pump_control_mode = self.rf_previous_pump_control_mode
+            self.pump_override = self.rf_previous_pump_override
+            self.rf_previous_pump_control_mode = None
+            self.rf_previous_pump_override = None
+            if changed:
+                self.pending_force_publish = True
+                print("RF operation mode -> restore previous")
+            return changed
+
+        return False
 
     def pop_pending_pump_result(self):
         result = self.pending_pump_result
