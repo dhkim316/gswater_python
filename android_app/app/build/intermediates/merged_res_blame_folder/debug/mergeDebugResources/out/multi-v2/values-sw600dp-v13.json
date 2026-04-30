@@ -4,7 +4,7 @@
             "outputFile": "com.gswater.bluetooth.app-mergeDebugResources-33:/values-sw600dp-v13/values-sw600dp-v13.xml",
             "map": [
                 {
-                    "source": "/Users/admin/.gradle/caches/8.9/transforms/c7ceb06cad513c2e720cb3c83575edf6/transformed/appcompat-1.7.0/res/values-sw600dp-v13/values-sw600dp-v13.xml",
+                    "source": "/Users/admin/.gradle/caches/9.0-milestone-1/transforms/f19e6efddde5211c870f3a51ff4956e5/transformed/appcompat-1.7.0/res/values-sw600dp-v13/values-sw600dp-v13.xml",
                     "from": {
                         "startLines": "2,3,4,5,6,7,8,9",
                         "startColumns": "4,4,4,4,4,4,4,4",
@@ -14,7 +14,7 @@
                     }
                 },
                 {
-                    "source": "/Users/admin/.gradle/caches/8.9/transforms/d43f65daf7e20aa9ebd67395a581b86d/transformed/material-1.12.0/res/values-sw600dp-v13/values-sw600dp-v13.xml",
+                    "source": "/Users/admin/.gradle/caches/9.0-milestone-1/transforms/7f97d264f13aac2ced4fd6a3f60e52ba/transformed/material-1.12.0/res/values-sw600dp-v13/values-sw600dp-v13.xml",
                     "from": {
                         "startLines": "2,3,4,5,6,7,8,10,11,12,13,14",
                         "startColumns": "4,4,4,4,4,4,4,4,4,4,4,4",

@@ -213,6 +213,9 @@ class MainActivity : AppCompatActivity(), BleUartManager.Callback {
         binding.btnSendFlowMeter.setOnClickListener {
             sendSingleConfig("SET_INSTALL_FLOW_METER_ICON", if (binding.cbFlowMeter.isChecked) "1" else "0", "SET_INSTALL_FLOW_METER_ICON")
         }
+        binding.btnSendFilterCowork.setOnClickListener {
+            sendSingleConfig("SET_FILTER_COWORK", if (binding.cbFilterCowork.isChecked) "1" else "0", "SET_FILTER_COWORK")
+        }
         binding.btnSendSsid.setOnClickListener {
             sendSingleConfig("SET_SSID_TXT", binding.etSsid.text.toString().trim(), "SET_SSID_TXT")
         }
@@ -290,6 +293,7 @@ class MainActivity : AppCompatActivity(), BleUartManager.Callback {
         binding.etWellAddress.setText("문경시 충무로21")
         binding.cbCurrentMeter.isChecked = false
         binding.cbFlowMeter.isChecked = false
+        binding.cbFilterCowork.isChecked = false
         binding.etSsid.setText("ABCDEF")
         binding.etPass.setText("GGDHJ")
         setServerIpFields("192.168.001.005")
@@ -463,6 +467,7 @@ class MainActivity : AppCompatActivity(), BleUartManager.Callback {
             put("SET_WELL_ADDRESS_TXT", binding.etWellAddress.text.toString().trim())
             put("SET_INSTALL_CURRENT_METER_ICON", if (binding.cbCurrentMeter.isChecked) "1" else "0")
             put("SET_INSTALL_FLOW_METER_ICON", if (binding.cbFlowMeter.isChecked) "1" else "0")
+            put("SET_FILTER_COWORK", if (binding.cbFilterCowork.isChecked) "1" else "0")
             put("SET_SSID_TXT", binding.etSsid.text.toString().trim())
             put("SET_PASS_TXT", binding.etPass.text.toString().trim())
             put("SET_SERVER_IP_TXT", serverIp)
@@ -665,6 +670,7 @@ class MainActivity : AppCompatActivity(), BleUartManager.Callback {
             binding.etWellAddress.setText(config.optString("SET_WELL_ADDRESS_TXT", binding.etWellAddress.text.toString()))
             binding.cbCurrentMeter.isChecked = config.optString("SET_INSTALL_CURRENT_METER_ICON") == "1"
             binding.cbFlowMeter.isChecked = config.optString("SET_INSTALL_FLOW_METER_ICON") == "1"
+            binding.cbFilterCowork.isChecked = config.optString("SET_FILTER_COWORK") == "1"
             binding.etSsid.setText(config.optString("SET_SSID_TXT", binding.etSsid.text.toString()))
             binding.etPass.setText(config.optString("SET_PASS_TXT", binding.etPass.text.toString()))
             setServerIpFields(config.optString("SET_SERVER_IP_TXT", "192.168.001.005"))

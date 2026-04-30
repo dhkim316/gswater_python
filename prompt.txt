@@ -17,3 +17,15 @@ MCP23008이 감지 되는 경우 현재 코드를 실행하고
     def set_relay2_motor(self, state):         -->     GP3 on/off 하도록
     def set_relay3_alarm(self, state):         -->     GP2 on/off 하도록
 처리해줘
+
+address의 첫 번째 숫자가 단순 주소가 아니라 “RF 운전 모드 플래그” 역할인데.
+config.txt의 SET_FILTER_COWORK == "0"이면 address의 첫 번째 숫자가 "0"이더라도 처리하지 않고 현재 동작 모드 유지
+config.txt의 SET_FILTER_COWORK == "1"이면 address의 첫 번째 숫자가 "0"이면 펌프를 manual/on으로 전환
+config.txt의 SET_FILTER_COWORK == "1"이면 address의 첫 번째 숫자가 "1"이면 이전 펌프 제어 상태로 복원
+config.txt에 SET_FILTER_COWORK 내용 없으면 config.txt의 마지막 라인에 SET_FILTER_COWORK,0 추가
+이렇게 처리 해줘
+
+android_app에 SET_FILTER_COWORK 세팅하는것 추가
+유량계 설치 여부 아래에 
+체크박스 필터연동, send버튼 처리
+관련하여 pico쪽처리도 해줘

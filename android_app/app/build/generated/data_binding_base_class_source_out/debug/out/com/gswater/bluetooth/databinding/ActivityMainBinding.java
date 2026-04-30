@@ -50,6 +50,9 @@ public final class ActivityMainBinding implements ViewBinding {
   public final Button btnSendCurrentMeter;
 
   @NonNull
+  public final Button btnSendFilterCowork;
+
+  @NonNull
   public final Button btnSendFlowMeter;
 
   @NonNull
@@ -102,6 +105,9 @@ public final class ActivityMainBinding implements ViewBinding {
 
   @NonNull
   public final CheckBox cbCurrentMeter;
+
+  @NonNull
+  public final CheckBox cbFilterCowork;
 
   @NonNull
   public final CheckBox cbFlowMeter;
@@ -226,22 +232,24 @@ public final class ActivityMainBinding implements ViewBinding {
   private ActivityMainBinding(@NonNull ScrollView rootView, @NonNull Button btnConnect,
       @NonNull Button btnDisconnect, @NonNull Button btnPageDevice, @NonNull Button btnPageNetwork,
       @NonNull Button btnPagePhones, @NonNull Button btnPickFile, @NonNull Button btnSendAll,
-      @NonNull Button btnSendCurrentMeter, @NonNull Button btnSendFlowMeter,
-      @NonNull Button btnSendHorsePower, @NonNull Button btnSendInstallDate,
-      @NonNull Button btnSendLevels, @NonNull Button btnSendPass, @NonNull Button btnSendPhone1,
-      @NonNull Button btnSendPhone2, @NonNull Button btnSendPhone3, @NonNull Button btnSendPhone4,
-      @NonNull Button btnSendPhone5, @NonNull Button btnSendRegion, @NonNull Button btnSendServerIp,
-      @NonNull Button btnSendSetCh, @NonNull Button btnSendSsid, @NonNull Button btnSendWellAddress,
-      @NonNull Button btnSyncTime, @NonNull Button btnUploadFile, @NonNull CheckBox cbCurrentMeter,
-      @NonNull CheckBox cbFlowMeter, @NonNull EditText etHorsePower, @NonNull EditText etPass,
-      @NonNull EditText etPhone1A, @NonNull EditText etPhone1B, @NonNull EditText etPhone1C,
-      @NonNull EditText etPhone2A, @NonNull EditText etPhone2B, @NonNull EditText etPhone2C,
-      @NonNull EditText etPhone3A, @NonNull EditText etPhone3B, @NonNull EditText etPhone3C,
-      @NonNull EditText etPhone4A, @NonNull EditText etPhone4B, @NonNull EditText etPhone4C,
-      @NonNull EditText etPhone5A, @NonNull EditText etPhone5B, @NonNull EditText etPhone5C,
-      @NonNull EditText etRegion, @NonNull EditText etServerIp1, @NonNull EditText etServerIp2,
-      @NonNull EditText etServerIp3, @NonNull EditText etServerIp4, @NonNull EditText etSetCh,
-      @NonNull EditText etSsid, @NonNull EditText etWellAddress, @NonNull ListView lvDevices,
+      @NonNull Button btnSendCurrentMeter, @NonNull Button btnSendFilterCowork,
+      @NonNull Button btnSendFlowMeter, @NonNull Button btnSendHorsePower,
+      @NonNull Button btnSendInstallDate, @NonNull Button btnSendLevels,
+      @NonNull Button btnSendPass, @NonNull Button btnSendPhone1, @NonNull Button btnSendPhone2,
+      @NonNull Button btnSendPhone3, @NonNull Button btnSendPhone4, @NonNull Button btnSendPhone5,
+      @NonNull Button btnSendRegion, @NonNull Button btnSendServerIp, @NonNull Button btnSendSetCh,
+      @NonNull Button btnSendSsid, @NonNull Button btnSendWellAddress, @NonNull Button btnSyncTime,
+      @NonNull Button btnUploadFile, @NonNull CheckBox cbCurrentMeter,
+      @NonNull CheckBox cbFilterCowork, @NonNull CheckBox cbFlowMeter,
+      @NonNull EditText etHorsePower, @NonNull EditText etPass, @NonNull EditText etPhone1A,
+      @NonNull EditText etPhone1B, @NonNull EditText etPhone1C, @NonNull EditText etPhone2A,
+      @NonNull EditText etPhone2B, @NonNull EditText etPhone2C, @NonNull EditText etPhone3A,
+      @NonNull EditText etPhone3B, @NonNull EditText etPhone3C, @NonNull EditText etPhone4A,
+      @NonNull EditText etPhone4B, @NonNull EditText etPhone4C, @NonNull EditText etPhone5A,
+      @NonNull EditText etPhone5B, @NonNull EditText etPhone5C, @NonNull EditText etRegion,
+      @NonNull EditText etServerIp1, @NonNull EditText etServerIp2, @NonNull EditText etServerIp3,
+      @NonNull EditText etServerIp4, @NonNull EditText etSetCh, @NonNull EditText etSsid,
+      @NonNull EditText etWellAddress, @NonNull ListView lvDevices,
       @NonNull NumberPicker npAlarmLevel, @NonNull NumberPicker npInstallDay,
       @NonNull NumberPicker npInstallMonth, @NonNull NumberPicker npInstallYear,
       @NonNull NumberPicker npRunLevel, @NonNull NumberPicker npStopLevel,
@@ -257,6 +265,7 @@ public final class ActivityMainBinding implements ViewBinding {
     this.btnPickFile = btnPickFile;
     this.btnSendAll = btnSendAll;
     this.btnSendCurrentMeter = btnSendCurrentMeter;
+    this.btnSendFilterCowork = btnSendFilterCowork;
     this.btnSendFlowMeter = btnSendFlowMeter;
     this.btnSendHorsePower = btnSendHorsePower;
     this.btnSendInstallDate = btnSendInstallDate;
@@ -275,6 +284,7 @@ public final class ActivityMainBinding implements ViewBinding {
     this.btnSyncTime = btnSyncTime;
     this.btnUploadFile = btnUploadFile;
     this.cbCurrentMeter = cbCurrentMeter;
+    this.cbFilterCowork = cbFilterCowork;
     this.cbFlowMeter = cbFlowMeter;
     this.etHorsePower = etHorsePower;
     this.etPass = etPass;
@@ -392,6 +402,12 @@ public final class ActivityMainBinding implements ViewBinding {
         break missingId;
       }
 
+      id = R.id.btnSendFilterCowork;
+      Button btnSendFilterCowork = ViewBindings.findChildViewById(rootView, id);
+      if (btnSendFilterCowork == null) {
+        break missingId;
+      }
+
       id = R.id.btnSendFlowMeter;
       Button btnSendFlowMeter = ViewBindings.findChildViewById(rootView, id);
       if (btnSendFlowMeter == null) {
@@ -497,6 +513,12 @@ public final class ActivityMainBinding implements ViewBinding {
       id = R.id.cbCurrentMeter;
       CheckBox cbCurrentMeter = ViewBindings.findChildViewById(rootView, id);
       if (cbCurrentMeter == null) {
+        break missingId;
+      }
+
+      id = R.id.cbFilterCowork;
+      CheckBox cbFilterCowork = ViewBindings.findChildViewById(rootView, id);
+      if (cbFilterCowork == null) {
         break missingId;
       }
 
@@ -742,16 +764,16 @@ public final class ActivityMainBinding implements ViewBinding {
 
       return new ActivityMainBinding((ScrollView) rootView, btnConnect, btnDisconnect,
           btnPageDevice, btnPageNetwork, btnPagePhones, btnPickFile, btnSendAll,
-          btnSendCurrentMeter, btnSendFlowMeter, btnSendHorsePower, btnSendInstallDate,
-          btnSendLevels, btnSendPass, btnSendPhone1, btnSendPhone2, btnSendPhone3, btnSendPhone4,
-          btnSendPhone5, btnSendRegion, btnSendServerIp, btnSendSetCh, btnSendSsid,
-          btnSendWellAddress, btnSyncTime, btnUploadFile, cbCurrentMeter, cbFlowMeter, etHorsePower,
-          etPass, etPhone1A, etPhone1B, etPhone1C, etPhone2A, etPhone2B, etPhone2C, etPhone3A,
-          etPhone3B, etPhone3C, etPhone4A, etPhone4B, etPhone4C, etPhone5A, etPhone5B, etPhone5C,
-          etRegion, etServerIp1, etServerIp2, etServerIp3, etServerIp4, etSetCh, etSsid,
-          etWellAddress, lvDevices, npAlarmLevel, npInstallDay, npInstallMonth, npInstallYear,
-          npRunLevel, npStopLevel, tvConnectionStatus, tvLastResponse, tvLog, tvPageCaption,
-          tvSelectedFile, tvUploadStatus, viewFlipperPages);
+          btnSendCurrentMeter, btnSendFilterCowork, btnSendFlowMeter, btnSendHorsePower,
+          btnSendInstallDate, btnSendLevels, btnSendPass, btnSendPhone1, btnSendPhone2,
+          btnSendPhone3, btnSendPhone4, btnSendPhone5, btnSendRegion, btnSendServerIp, btnSendSetCh,
+          btnSendSsid, btnSendWellAddress, btnSyncTime, btnUploadFile, cbCurrentMeter,
+          cbFilterCowork, cbFlowMeter, etHorsePower, etPass, etPhone1A, etPhone1B, etPhone1C,
+          etPhone2A, etPhone2B, etPhone2C, etPhone3A, etPhone3B, etPhone3C, etPhone4A, etPhone4B,
+          etPhone4C, etPhone5A, etPhone5B, etPhone5C, etRegion, etServerIp1, etServerIp2,
+          etServerIp3, etServerIp4, etSetCh, etSsid, etWellAddress, lvDevices, npAlarmLevel,
+          npInstallDay, npInstallMonth, npInstallYear, npRunLevel, npStopLevel, tvConnectionStatus,
+          tvLastResponse, tvLog, tvPageCaption, tvSelectedFile, tvUploadStatus, viewFlipperPages);
     }
     String missingId = rootView.getResources().getResourceName(id);
     throw new NullPointerException("Missing required view with ID: ".concat(missingId));

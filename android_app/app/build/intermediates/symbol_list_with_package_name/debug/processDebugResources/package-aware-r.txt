@@ -3206,6 +3206,7 @@ id btnPagePhones
 id btnPickFile
 id btnSendAll
 id btnSendCurrentMeter
+id btnSendFilterCowork
 id btnSendFlowMeter
 id btnSendHorsePower
 id btnSendInstallDate
@@ -3229,6 +3230,7 @@ id callMeasure
 id cancel_button
 id carryVelocity
 id cbCurrentMeter
+id cbFilterCowork
 id cbFlowMeter
 id center
 id centerCrop
@@ -3924,6 +3926,7 @@ string exposed_dropdown_menu_content_description
 string fab_transformation_scrim_behavior
 string fab_transformation_sheet_behavior
 string file_upload_section
+string filter_cowork
 string flow_meter
 string hide_bottom_view_on_scroll_behavior
 string horse_power

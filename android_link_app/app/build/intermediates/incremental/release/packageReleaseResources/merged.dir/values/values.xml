@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources xmlns:ns1="http://schemas.android.com/tools">
-    <string name="app_name">GSWater Link</string>
-    <string name="browser_not_found">브라우저를 찾을 수 없습니다.</string>
-    <style name="Theme.GSWaterLink" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="android:statusBarColor" ns1:targetApi="l">@android:color/black</item>
-        <item name="android:navigationBarColor">@android:color/black</item>
-    </style>
-</resources>

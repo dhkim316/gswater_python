@@ -21,7 +21,7 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V9.2"
+APP_VERSION = "V9.3"
 APP_VERSION_PREFIX = APP_VERSION[:4]
 '''
 송수신 led처리
@@ -34,6 +34,7 @@ filter제어 입력 추가
 relay제어 함수 gpio extender 내용중에 pico gpio로 제어하는 내용 추가
 backlight 제어 추가, 30분간 버튼입력이나 ble입력 없으면 backlight off
 reset 버튼, 재부팅 기능
+filter cowork 설정 추가, 0이면 filter 동작 안함, 1이면 filter 동작
 '''
 
 CONFIG_PATH = "config.txt"
@@ -85,6 +86,7 @@ GC_MIN_FREE_BYTES = 32768
 CONFIG_METADATA = load_config_metadata()
 EXTRA_CONFIG_DEFAULT_ITEMS = (
     (DEVICE_SERIAL_CONFIG_KEY, ["1234"]),
+    ("SET_FILTER_COWORK", ["0"]),
 )
 EXTRA_CONFIG_TEXT_FIELDS = (
     DEVICE_SERIAL_CONFIG_KEY,
@@ -146,6 +148,7 @@ LEVEL_CONFIG_FIELDS = (
 ICON_CONFIG_FIELDS = (
     "SET_INSTALL_CURRENT_METER_ICON",
     "SET_INSTALL_FLOW_METER_ICON",
+    "SET_FILTER_COWORK",
 )
 PHONE_CONFIG_FIELDS = (
     "SET_PHONE1_TXT",
@@ -2201,7 +2204,8 @@ def run():
                             error_count = 0
                             last_rx_ok_ms = time.ticks_ms()
                             last_parsed = parsed
-                            if mqtt_bridge.apply_rf_operation_mode(parsed.get("operation_mode_flag")):
+                            filter_cowork_enabled = get_config_value(config, "SET_FILTER_COWORK") == "1"
+                            if filter_cowork_enabled and mqtt_bridge.apply_rf_operation_mode(parsed.get("operation_mode_flag")):
                                 pump_active = True
                                 pump_state["active"] = True
                             build_rf_display_updates(pending_display_updates, parsed, config)

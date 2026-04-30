@@ -16,6 +16,7 @@ id btnPagePhones
 id btnPickFile
 id btnSendAll
 id btnSendCurrentMeter
+id btnSendFilterCowork
 id btnSendFlowMeter
 id btnSendHorsePower
 id btnSendInstallDate
@@ -34,6 +35,7 @@ id btnSendWellAddress
 id btnSyncTime
 id btnUploadFile
 id cbCurrentMeter
+id cbFilterCowork
 id cbFlowMeter
 id etHorsePower
 id etPass
@@ -87,6 +89,7 @@ string device_name
 string disconnect
 string disconnected
 string file_upload_section
+string filter_cowork
 string flow_meter
 string horse_power
 string install_day

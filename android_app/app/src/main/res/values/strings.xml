@@ -41,6 +41,7 @@
     <string name="well_address">SET_WELL_ADDRESS_TXT</string>
     <string name="current_meter">전류계 설치 여부</string>
     <string name="flow_meter">유량계 설치 여부</string>
+    <string name="filter_cowork">필터연동</string>
     <string name="ssid">SET_SSID_TXT</string>
     <string name="pass">SET_PASS_TXT</string>
     <string name="server_ip">SET_SERVER_IP_TXT</string>
