@@ -41,7 +41,7 @@ def parse_flow_response(raw_packet):
             digits = payload[1:6]
             if all(48 <= value <= 57 for value in digits):
                 if (sum(payload) & 0xFF) == checksum:
-                    return digits.decode("ascii")
+                    return bytes(digits).decode("ascii")
         start -= 1
 
     return None
@@ -58,7 +58,7 @@ class RFReceiveThread:
         self.started = False
         self.mode = None
         self.waiting = False
-        self.buffer = b""
+        self.buffer = bytearray()
         self.result = None
 
     def start(self):
@@ -83,7 +83,7 @@ class RFReceiveThread:
         try:
             self.waiting = False
             self.mode = None
-            self.buffer = b""
+            self.buffer = bytearray()
             self.result = None
         finally:
             self.lock.release()
@@ -102,7 +102,7 @@ class RFReceiveThread:
         try:
             self.mode = mode
             self.waiting = True
-            self.buffer = b""
+            self.buffer = bytearray()
             self.result = None
         finally:
             self.lock.release()
@@ -135,15 +135,17 @@ class RFReceiveThread:
             if not self.waiting:
                 return
 
-            self.buffer = (self.buffer or b"") + chunk
-            if len(self.buffer) > self.max_buffer_size:
-                self.buffer = self.buffer[-self.max_buffer_size:]
+            self.buffer.extend(chunk)
+            overflow = len(self.buffer) - self.max_buffer_size
+            if overflow > 0:
+                self.buffer = self.buffer[overflow:]
 
             result = self._parse_result(self.mode, self.buffer)
             if result:
                 self.result = result
                 self.waiting = False
                 self.mode = None
+                self.buffer = bytearray()
         finally:
             self.lock.release()
 
@@ -154,7 +156,7 @@ class RFReceiveThread:
                 return None
             return {
                 "mode": MODE_LEVEL,
-                "raw": buffer,
+                "raw": bytes(buffer),
                 "parsed": parse_frame(frame),
             }
 
@@ -164,7 +166,7 @@ class RFReceiveThread:
                 return None
             return {
                 "mode": MODE_FLOW,
-                "raw": buffer,
+                "raw": bytes(buffer),
                 "flow_pulse": pulse,
             }
 

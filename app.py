@@ -1,7 +1,12 @@
 import gc
 import json
 import time
-from machine import ADC, I2C, Pin, reset as machine_reset
+from machine import ADC, I2C, Pin, reset as machine_reset, unique_id as machine_unique_id
+
+try:
+    import ubinascii as binascii
+except ImportError:
+    import binascii
 
 from bluetooth_config_pico import BluetoothConfigServer
 from button_input_pico import decode_buttons, read_hc165
@@ -16,7 +21,8 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V9.0"
+APP_VERSION = "V9.1"
+APP_VERSION_PREFIX = APP_VERSION[:4]
 '''
 송수신 led처리
 ble세팅후 disconnect하면 reset하는 기능 추가
@@ -28,6 +34,7 @@ filter제어 입력 추가
 '''
 
 CONFIG_PATH = "config.txt"
+DEVICE_SERIAL_CONFIG_KEY = "SET_SERIAL_NUM_TXT"
 POLL_MS = 20
 RF_POLL_MS = 2000
 RF_RESPONSE_WAIT_MS = 1000
@@ -66,13 +73,15 @@ BLUETOOTH_DEVICE_NAME = "GSWater"
 MQTT_USER_ID = "1"
 MQTT_PUBLISH_MS = 5000
 RTC_CACHE_MS = CLOCK_UPDATE_MS
+GC_COLLECT_INTERVAL_MS = 15000
+GC_MIN_FREE_BYTES = 32768
 
 CONFIG_METADATA = load_config_metadata()
 EXTRA_CONFIG_DEFAULT_ITEMS = (
-    ("SET_SERIAL_NUM_TXT", ["1234"]),
+    (DEVICE_SERIAL_CONFIG_KEY, ["1234"]),
 )
 EXTRA_CONFIG_TEXT_FIELDS = (
-    "SET_SERIAL_NUM_TXT",
+    DEVICE_SERIAL_CONFIG_KEY,
 )
 
 
@@ -81,16 +90,22 @@ def _build_config_runtime_metadata():
     default_items = list(CONFIG_METADATA["default_items"])
     text_fields = list(CONFIG_METADATA["text_fields"])
     icon_fields = list(CONFIG_METADATA["icon_fields"])
+    order_set = set(order)
+    default_item_keys = set(name for name, _ in default_items)
+    text_field_set = set(text_fields)
 
     for key, parts in EXTRA_CONFIG_DEFAULT_ITEMS:
-        if key not in order:
+        if key not in order_set:
             order.append(key)
-        if key not in [name for name, _ in default_items]:
+            order_set.add(key)
+        if key not in default_item_keys:
             default_items.append((key, parts[:]))
+            default_item_keys.add(key)
 
     for key in EXTRA_CONFIG_TEXT_FIELDS:
-        if key not in text_fields:
+        if key not in text_field_set:
             text_fields.append(key)
+            text_field_set.add(key)
 
     return {
         "order": tuple(order),
@@ -126,9 +141,56 @@ ICON_CONFIG_FIELDS = (
     "SET_INSTALL_CURRENT_METER_ICON",
     "SET_INSTALL_FLOW_METER_ICON",
 )
+PHONE_CONFIG_FIELDS = (
+    "SET_PHONE1_TXT",
+    "SET_PHONE2_TXT",
+    "SET_PHONE3_TXT",
+    "SET_PHONE4_TXT",
+    "SET_PHONE5_TXT",
+)
 
 RTC_SYNC_COMMAND = "sync_time"
 GET_CONFIG_COMMAND = "get_config"
+
+
+def configure_gc():
+    threshold = getattr(gc, "threshold", None)
+    mem_free = getattr(gc, "mem_free", None)
+    mem_alloc = getattr(gc, "mem_alloc", None)
+    if threshold is None or mem_free is None or mem_alloc is None:
+        return
+
+    try:
+        threshold(mem_alloc() + max(4096, mem_free() // 4))
+    except Exception:
+        pass
+
+
+def init_gc_state(now_ms=None):
+    if now_ms is None:
+        now_ms = time.ticks_ms()
+    return {"next_collect_ms": time.ticks_add(now_ms, GC_COLLECT_INTERVAL_MS)}
+
+
+def service_gc(gc_state, now_ms=None, force=False):
+    if now_ms is None:
+        now_ms = time.ticks_ms()
+
+    if not force:
+        mem_free = getattr(gc, "mem_free", None)
+        if mem_free is not None:
+            try:
+                if mem_free() <= GC_MIN_FREE_BYTES:
+                    force = True
+            except Exception:
+                force = False
+
+    if not force and time.ticks_diff(now_ms, gc_state["next_collect_ms"]) < 0:
+        return False
+
+    gc.collect()
+    gc_state["next_collect_ms"] = time.ticks_add(now_ms, GC_COLLECT_INTERVAL_MS)
+    return True
 
 
 def split_csv_line(line):
@@ -153,6 +215,32 @@ def build_default_config():
     return build_default_config_map(DEFAULT_CONFIG_ITEMS)
 
 
+def get_chip_unique_id():
+    try:
+        raw = machine_unique_id()
+        value = binascii.hexlify(raw)
+        if not isinstance(value, str):
+            value = value.decode("ascii")
+        return value.upper()
+    except Exception as exc:
+        print("Chip unique id read failed: {}".format(exc))
+        return ""
+
+
+def sync_device_serial_config(config):
+    chip_id = get_chip_unique_id()
+    if not chip_id:
+        return False
+
+    current = get_config_value(config, DEVICE_SERIAL_CONFIG_KEY)
+    if current == chip_id:
+        return False
+
+    config[DEVICE_SERIAL_CONFIG_KEY] = [chip_id]
+    print("{} -> chip unique id {}".format(DEVICE_SERIAL_CONFIG_KEY, chip_id))
+    return True
+
+
 def normalize_channel(value):
     try:
         channel = int(value)
@@ -174,6 +262,7 @@ def normalize_config(config):
     merged["SET_CH"] = [str(normalize_channel(merged["SET_CH"][0] if merged["SET_CH"] else RF_CHANNEL))]
     server_target = normalize_server_target_text(get_config_value(merged, "SET_SERVER_IP_TXT"))
     merged["SET_SERVER_IP_TXT"] = [server_target or "000.000.000.000"]
+    sync_device_serial_config(merged)
     return merged
 
 
@@ -184,6 +273,8 @@ def load_config(path=CONFIG_PATH):
 
 def save_config(config, path=CONFIG_PATH):
     normalized = normalize_config(config)
+    if isinstance(config, dict):
+        config[DEVICE_SERIAL_CONFIG_KEY] = normalized[DEVICE_SERIAL_CONFIG_KEY][:]
     save_config_parts(normalized, path, CONFIG_RUNTIME_METADATA["order"])
 
 
@@ -295,6 +386,9 @@ def sanitize_config_value(config, vp_map, key, value):
         if not normalized:
             return None
         return normalized
+
+    if key == DEVICE_SERIAL_CONFIG_KEY:
+        return get_chip_unique_id() or get_config_value(config, DEVICE_SERIAL_CONFIG_KEY) or text
 
     if key not in CONFIG_TEXT_FIELDS:
         return None
@@ -570,10 +664,15 @@ def digits_to_ip_text(digits):
     if len(digits) != 12 or not digits.isdigit():
         return None
 
-    parts = [digits[index:index + 3] for index in range(0, 12, 3)]
-    if any(int(part) > 255 for part in parts):
-        return None
-    return ".".join(parts)
+    for index in range(0, 12, 3):
+        if int(digits[index:index + 3]) > 255:
+            return None
+    return "{}.{}.{}.{}".format(
+        digits[0:3],
+        digits[3:6],
+        digits[6:9],
+        digits[9:12],
+    )
 
 
 def get_ip_display_cursor(cursor_index):
@@ -687,10 +786,9 @@ def build_cursor_blink_text(value, cursor_index, visible):
     if visible:
         return value
 
-    chars = list(value)
-    if 0 <= cursor_index < len(chars):
-        chars[cursor_index] = " "
-    return "".join(chars)
+    if cursor_index < 0 or cursor_index >= len(value):
+        return value
+    return value[:cursor_index] + " " + value[cursor_index + 1:]
 
 
 def render_setting_item(display, vp_map, config, setting_state):
@@ -747,7 +845,7 @@ def move_setting_selection(display, vp_map, config, setting_state, delta):
 def cycle_setting_character(display, vp_map, config, setting_state, delta):
     item = get_setting_item(setting_state["page"], setting_state["item_index"])
     name = item["name"]
-    value = list(get_setting_text_value(config, vp_map, item))
+    value = get_setting_text_value(config, vp_map, item)
     width = len(value)
     if width <= 0:
         return
@@ -760,8 +858,12 @@ def cycle_setting_character(display, vp_map, config, setting_state, delta):
     except ValueError:
         position = 0
 
-    value[cursor] = charset[(position + delta) % len(charset)]
-    save_and_apply_config_value(display, vp_map, config, name, "".join(value).strip())
+    updated = (
+        value[:cursor]
+        + charset[(position + delta) % len(charset)]
+        + value[cursor + 1:]
+    )
+    save_and_apply_config_value(display, vp_map, config, name, updated.strip())
 
     setting_state["blink_visible"] = True
     setting_state["next_blink_ms"] = time.ticks_add(time.ticks_ms(), SETTING_BLINK_MS)
@@ -805,11 +907,15 @@ def cycle_setting_ip_digit(display, vp_map, config, setting_state, delta):
     current_value = normalize_server_target_text(get_config_display_value(config, item["name"]))
     if not is_ipv4_text(current_value):
         return
-    digits = list(ip_text_to_digits(current_value))
+    digits = ip_text_to_digits(current_value)
     cursor = min(setting_state["cursor_index"], len(digits) - 1)
     current = int(digits[cursor])
-    digits[cursor] = str((current + delta) % 10)
-    candidate = digits_to_ip_text("".join(digits))
+    updated_digits = (
+        digits[:cursor]
+        + str((current + delta) % 10)
+        + digits[cursor + 1:]
+    )
+    candidate = digits_to_ip_text(updated_digits)
     if candidate is None:
         return
 
@@ -1295,10 +1401,19 @@ def start_icon_pulse(display, vp_map, pulse_deadlines, name, value, duration_ms=
 
 
 def service_icon_pulses(display, vp_map, pulse_deadlines, now_ms):
-    for name in list(pulse_deadlines):
-        if time.ticks_diff(now_ms, pulse_deadlines[name]) >= 0:
-            set_icon_field(display, vp_map, name, 0)
-            del pulse_deadlines[name]
+    expired = None
+    for name, deadline in pulse_deadlines.items():
+        if time.ticks_diff(now_ms, deadline) >= 0:
+            if expired is None:
+                expired = []
+            expired.append(name)
+
+    if not expired:
+        return
+
+    for name in expired:
+        set_icon_field(display, vp_map, name, 0)
+        del pulse_deadlines[name]
 
 
 def read_rtc_time_cached(rtc=None, rtc_cache=None, now_ms=None, allow_refresh=True):
@@ -1464,7 +1579,7 @@ def battery_pct_from_stage(stage):
 
 def build_phone_numbers(config):
     numbers = []
-    for key in ("SET_PHONE1_TXT", "SET_PHONE2_TXT", "SET_PHONE3_TXT", "SET_PHONE4_TXT", "SET_PHONE5_TXT"):
+    for key in PHONE_CONFIG_FIELDS:
         value = get_config_value(config, key).strip()
         if value:
             numbers.append(value)
@@ -1476,6 +1591,7 @@ def build_dashboard_snapshot(config, rtc, mqtt_bridge, parsed, tank_level, flow_
     solar_state = ""
     pressure_enabled = None
     version_text = APP_VERSION
+    network_state = mqtt_bridge.network_state() if mqtt_bridge else "off"
     relay3_alarm_reason = get_relay3_alarm_reason()
 
     if parsed:
@@ -1484,12 +1600,12 @@ def build_dashboard_snapshot(config, rtc, mqtt_bridge, parsed, tank_level, flow_
     if parsed and not comm_failed:
         battery_stage = parse_int_or_none(parsed.get("battery"))
         solar_state = "on" if parsed.get("solar") == "1" else "off"
-        version_text = "{}{}".format(APP_VERSION[:4], parsed.get("tank_version", ""))
+        version_text = "{}{}".format(APP_VERSION_PREFIX, parsed.get("tank_version", ""))
 
     data = {
         "channel": normalize_channel(get_config_value(config, "SET_CH")),
-        "lte": mqtt_bridge.network_state() if mqtt_bridge else "off",
-        "network": mqtt_bridge.network_state() if mqtt_bridge else "off",
+        "lte": network_state,
+        "network": network_state,
         "version_text": version_text,
         "horse_power": get_config_value(config, "SET_HORSE_POWER_TXT"),
         "well_address": get_config_value(config, "SET_WELL_ADDRESS_TXT"),
@@ -1681,7 +1797,7 @@ def build_rf_display_updates(queue_state, parsed, config=None):
     sensor_icon = 1 if parsed["sensor_type"] == "Q" else 0
 
     clear_display_queue(queue_state)
-    enqueue_text_update(queue_state, "VERSION_TXT", "{}{}".format(APP_VERSION[:4], parsed["tank_version"]))
+    enqueue_text_update(queue_state, "VERSION_TXT", "{}{}".format(APP_VERSION_PREFIX, parsed["tank_version"]))
     enqueue_text_update(queue_state, "TANK_LEVEL_TXT", level)
     enqueue_text_update(queue_state, "ERROR_COUNT_TXT", "OK")
 
@@ -1719,6 +1835,7 @@ def run():
     bt_server = None
     mqtt_bridge = None
     ext = None
+    configure_gc()
 
     try:
         pages = [page for page in load_pages() if 0 <= page <= 3]
@@ -1755,6 +1872,7 @@ def run():
     setting_state = init_setting_state()
     previous_pressed = set()
     now_ms = time.ticks_ms()
+    gc_state = init_gc_state(now_ms)
     pump_state = init_pump_state(now_ms)
     last_rx_ok_ms = now_ms
     next_rf_poll = now_ms
@@ -1812,7 +1930,7 @@ def run():
         print("GPIOExtender init failed: {}".format(exc))
 
     current_reset_reference = read_reset_reference_time(rtc, rtc_cache, now_ms)
-    if current_reset_reference[3] == 0 and current_reset_reference[4] == 0:
+    if current_reset_reference and current_reset_reference[3] == 0 and current_reset_reference[4] == 0:
         last_midnight_reset_date = build_date_key(current_reset_reference)
     else:
         last_midnight_reset_date = ""
@@ -1983,7 +2101,6 @@ def run():
                 ):
                     next_rf_poll = time.ticks_add(now_ms, RF_POLL_MS)
                     start_icon_pulse(display, vp_map, pulse_deadlines, "TX_LED_ICON", 1)
-                    gc.collect()
                     print("TX {SA}")
                     if rf_receiver:
                         rf_receiver.begin_level()
@@ -2025,8 +2142,6 @@ def run():
                             error_count += 1
                             build_rf_error_updates(pending_display_updates, error_count)
                             start_icon_pulse(display, vp_map, pulse_deadlines, "RX_LED_ICON", 3)
-
-                        gc.collect()
 
                 now_ms = time.ticks_ms()
                 if flow_waiting_response:
@@ -2076,6 +2191,7 @@ def run():
                         pending_pump_command,
                     )
                     mqtt_bridge.publish_runtime(config, snapshot)
+                    snapshot = None
 
                 now_ms = time.ticks_ms()
                 if mqtt_bridge.should_publish(now_ms):
@@ -2093,12 +2209,15 @@ def run():
                         now_ms,
                     )
                     mqtt_bridge.publish_runtime(config, snapshot)
+                    snapshot = None
 
                 previous_pressed = pressed_set
+                service_gc(gc_state, time.ticks_ms())
                 time.sleep_ms(POLL_MS)
             except Exception as exc:
                 print("Main loop error: {}".format(exc))
                 previous_pressed = set()
+                service_gc(gc_state, time.ticks_ms(), force=True)
                 time.sleep_ms(POLL_MS)
     finally:
         try:

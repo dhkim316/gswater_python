@@ -95,8 +95,11 @@ class MqttBridge:
         self.identity_cache = {
             "region_code": "KR00",
             "display_region": default_display_region,
-            "device_code": "0000",
+            "device_code": "0000000000000000",
         }
+        self._identity_signature = None
+        self._broker_input = None
+        self._broker_cache = ""
         self.pump_control_mode = "auto"
         self.pump_override = None
         self.rf_previous_pump_control_mode = None
@@ -123,11 +126,22 @@ class MqttBridge:
 
     def _normalized_broker_host(self, config):
         raw = self._text(self._config_value(config, "SET_SERVER_IP_TXT"))
-        parts = [part for part in raw.split(".") if part != ""]
+        if raw == self._broker_input:
+            return self._broker_cache
+
+        broker = raw
+        parts = raw.split(".")
         if len(parts) == 4 and all(part.isdigit() for part in parts):
-            values = [str(int(part)) for part in parts]
-            return ".".join(values)
-        return raw
+            broker = "{}.{}.{}.{}".format(
+                int(parts[0]),
+                int(parts[1]),
+                int(parts[2]),
+                int(parts[3]),
+            )
+
+        self._broker_input = raw
+        self._broker_cache = broker
+        return broker
 
     def _normalized_region_code(self, raw_region):
         raw = self._text(raw_region)
@@ -143,20 +157,18 @@ class MqttBridge:
 
     def _normalized_device_code(self, raw_device):
         raw = self._text(raw_device).upper()
-        digits = "".join(ch for ch in raw if "0" <= ch <= "9")
-        if digits and digits == raw:
-            return self._pad_left(digits[-4:], 4, "0")
-
         filtered = "".join(ch for ch in raw if ("0" <= ch <= "9") or ("A" <= ch <= "Z"))
         if not filtered:
-            return "0000"
-        if len(filtered) >= 4:
-            return filtered[-4:]
-        return self._pad_left(filtered, 4, "0")
+            return "0000000000000000"
+        return filtered
 
     def identity(self, config):
         raw_region = self._config_value(config, "SET_REGION_TXT")
         raw_device = self._config_value(config, "SET_SERIAL_NUM_TXT")
+        signature = (raw_region, raw_device)
+        if signature == self._identity_signature:
+            return self.identity_cache
+
         region_code = self._normalized_region_code(raw_region)
         identity = {
             "region_code": region_code,
@@ -164,6 +176,7 @@ class MqttBridge:
             "device_code": self._normalized_device_code(raw_device),
         }
         self.identity_cache = identity
+        self._identity_signature = signature
         return identity
 
     def is_connected(self):
@@ -342,7 +355,7 @@ class MqttBridge:
             return False
 
         identity = self.identity(config)
-        data = dict(snapshot.get("data") or {})
+        data = snapshot.get("data") or {}
         timestamp = self._text(snapshot.get("timestamp"))
         publish_dashboard = bool(snapshot.get("publish_dashboard", True))
         topic_prefix = "{}/pico/{}/".format(self.mqtt_user_id, identity["region_code"])

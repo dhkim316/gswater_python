@@ -5,6 +5,7 @@ ATT_NOTIFY_OVERHEAD = 3
 DEFAULT_NOTIFY_CHUNK = DEFAULT_ATT_MTU - ATT_NOTIFY_OVERHEAD
 PREFERRED_MTU = 247
 RX_BUFFER_SIZE = 1024
+QUEUE_COMPACT_THRESHOLD = 16
 
 
 class BluetoothConfigServer:
@@ -12,9 +13,10 @@ class BluetoothConfigServer:
         self.device_name = device_name
         self.enabled = False
         self._rx_lines = []
+        self._rx_line_index = 0
         self._rx_partial = b""
-        self._tx_buffer = []
         self._events = []
+        self._event_index = 0
         self._ble = None
         self._connections = set()
         self._conn_mtu = {}
@@ -129,6 +131,24 @@ class BluetoothConfigServer:
                 continue
             self._rx_lines.append(line)
 
+    def _pop_buffered(self, items, index_attr):
+        index = getattr(self, index_attr)
+        if index >= len(items):
+            return None
+
+        value = items[index]
+        index += 1
+
+        if index >= len(items):
+            del items[:]
+            index = 0
+        elif index >= QUEUE_COMPACT_THRESHOLD and index * 2 >= len(items):
+            del items[:index]
+            index = 0
+
+        setattr(self, index_attr, index)
+        return value
+
     def _advertise(self):
         if not self.enabled:
             return
@@ -139,20 +159,16 @@ class BluetoothConfigServer:
         self._ble.gap_advertise(100000, adv_data=payload)
 
     def has_pending(self):
-        return bool(self._rx_lines)
+        return self._rx_line_index < len(self._rx_lines)
 
     def has_event(self):
-        return bool(self._events)
+        return self._event_index < len(self._events)
 
     def read_event(self):
-        if not self._events:
-            return None
-        return self._events.pop(0)
+        return self._pop_buffered(self._events, "_event_index")
 
     def read_command(self):
-        if not self._rx_lines:
-            return None
-        return self._rx_lines.pop(0)
+        return self._pop_buffered(self._rx_lines, "_rx_line_index")
 
     def send_text(self, text):
         if not self.enabled:
@@ -162,14 +178,11 @@ class BluetoothConfigServer:
         if not payload.endswith("\n"):
             payload += "\n"
 
-        data = payload.encode("utf-8")
         print("BT TX -> {}".format(payload.strip()))
         if not self._connections:
-            self._tx_buffer.append(data)
-            if len(self._tx_buffer) > 10:
-                self._tx_buffer.pop(0)
             return
 
+        data = payload.encode("utf-8")
         for conn_handle in self._connections:
             offset = 0
             total = len(data)

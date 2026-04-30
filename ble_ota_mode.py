@@ -42,6 +42,49 @@ OTA_MODE_COMMANDS = (
     OTA_REBOOT_COMMAND,
     OTA_READY_COMMAND,
 )
+OTA_GC_COLLECT_MS = 15000
+OTA_GC_MIN_FREE_BYTES = 32768
+OTA_GC_CHUNK_INTERVAL = 16
+
+
+def configure_gc():
+    threshold = getattr(gc, "threshold", None)
+    mem_free = getattr(gc, "mem_free", None)
+    mem_alloc = getattr(gc, "mem_alloc", None)
+    if threshold is None or mem_free is None or mem_alloc is None:
+        return
+
+    try:
+        threshold(mem_alloc() + max(4096, mem_free() // 4))
+    except Exception:
+        pass
+
+
+def init_gc_state(now_ms=None):
+    if now_ms is None:
+        now_ms = time.ticks_ms()
+    return {"next_collect_ms": time.ticks_add(now_ms, OTA_GC_COLLECT_MS)}
+
+
+def service_gc(gc_state, now_ms=None, force=False):
+    if now_ms is None:
+        now_ms = time.ticks_ms()
+
+    if not force:
+        mem_free = getattr(gc, "mem_free", None)
+        if mem_free is not None:
+            try:
+                if mem_free() <= OTA_GC_MIN_FREE_BYTES:
+                    force = True
+            except Exception:
+                force = False
+
+    if not force and time.ticks_diff(now_ms, gc_state["next_collect_ms"]) < 0:
+        return False
+
+    gc.collect()
+    gc_state["next_collect_ms"] = time.ticks_add(now_ms, OTA_GC_COLLECT_MS)
+    return True
 
 
 def show_page(display, page):
@@ -172,6 +215,7 @@ def decompress_ota_payload(state):
         raise
     finally:
         remove_file_if_exists(source_path)
+        gc.collect()
 
 
 def build_progress_text(received_size, expected_size):
@@ -375,6 +419,8 @@ def service_ble_ota(display, vp_map, bt_server, ota_state):
                     size=ota_state["expected_size"],
                 )
             )
+            if ota_state["chunk_index"] % OTA_GC_CHUNK_INTERVAL == 0:
+                gc.collect()
             continue
 
         if command == OTA_END_COMMAND:
@@ -421,6 +467,7 @@ def service_ble_ota(display, vp_map, bt_server, ota_state):
 
 
 def run_ble_ota_mode():
+    configure_gc()
     vp_map = load_vp_map()
     try:
         display = DgusControl()
@@ -451,6 +498,7 @@ def run_ble_ota_mode():
         print("BT OTA idle timeout: {} sec".format(OTA_IDLE_TIMEOUT_MS // 1000))
 
     last_activity_ms = time.ticks_ms()
+    gc_state = init_gc_state(last_activity_ms)
 
     try:
         while True:
@@ -464,7 +512,7 @@ def run_ble_ota_mode():
             elif time.ticks_diff(time.ticks_ms(), last_activity_ms) >= OTA_IDLE_TIMEOUT_MS:
                 print("BT OTA idle timeout -> rebooting")
                 machine_reset()
-            gc.collect()
+            service_gc(gc_state)
             time.sleep_ms(POLL_MS)
     finally:
         close_ota_upload(ota_state, remove_partial=False)
