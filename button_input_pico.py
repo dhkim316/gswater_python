@@ -13,8 +13,8 @@ btn_map = {
     4: 'btn_right',
     3: 'btn_set',
     2: 'btn_enter',
-    1: 'btn_esc',
-    0: 'btn_reset',
+    1: 'btn_reset',
+    0: 'btn_back_light',
 }
 
 pl = Pin(PL_PIN, Pin.OUT)

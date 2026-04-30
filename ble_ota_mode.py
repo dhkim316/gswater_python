@@ -26,7 +26,7 @@ from button_input_pico import decode_buttons, read_hc165
 
 
 POLL_MS = 20
-OTA_IDLE_TIMEOUT_MS = 180000
+OTA_IDLE_TIMEOUT_MS = 600000
 GET_CONFIG_COMMAND = "get_config"
 BLE_OTA_DEVICE_NAME = "GSWater OTA"
 OTA_BEGIN_COMMAND = "ota_begin"
@@ -45,6 +45,8 @@ OTA_MODE_COMMANDS = (
 OTA_GC_COLLECT_MS = 15000
 OTA_GC_MIN_FREE_BYTES = 32768
 OTA_GC_CHUNK_INTERVAL = 16
+LCD_BACKLIGHT_ON_BRIGHTNESS = 100
+LCD_BACKLIGHT_OFF_BRIGHTNESS = 0
 
 
 def configure_gc():
@@ -92,6 +94,28 @@ def show_page(display, page):
         return
     display.set_page(page)
     print("PAGE -> {}".format(page))
+
+
+def turn_off_lcd_backlight(display):
+    if not display:
+        return
+    try:
+        display.set_brightness(LCD_BACKLIGHT_OFF_BRIGHTNESS)
+    except Exception as exc:
+        print("LCD backlight off failed: {}".format(exc))
+
+
+def turn_on_lcd_backlight(display):
+    if not display:
+        return
+    try:
+        display.set_brightness(LCD_BACKLIGHT_ON_BRIGHTNESS)
+    except Exception as exc:
+        print("LCD backlight on failed: {}".format(exc))
+
+
+def is_bluetooth_connected(bt_server):
+    return bool(bt_server and bt_server.enabled and bt_server.is_connected())
 
 
 def format_entry_text(entry, text):
@@ -471,6 +495,7 @@ def run_ble_ota_mode():
     vp_map = load_vp_map()
     try:
         display = DgusControl()
+        turn_on_lcd_backlight(display)
     except Exception as exc:
         display = None
         print("DGUS init failed in OTA mode: {}".format(exc))
@@ -502,8 +527,14 @@ def run_ble_ota_mode():
 
     try:
         while True:
-            if "btn_reset" in decode_buttons(read_hc165()):
+            pressed = decode_buttons(read_hc165())
+            if pressed or is_bluetooth_connected(bt_server):
+                last_activity_ms = time.ticks_ms()
+
+            if "btn_reset" in pressed:
                 print("btn_reset pressed in OTA mode -> system reboot")
+                turn_off_lcd_backlight(display)
+                time.sleep_ms(100)
                 machine_reset()
             event_activity = service_bluetooth_events(display, vp_map, bt_server, ota_state)
             ota_activity = service_ble_ota(display, vp_map, bt_server, ota_state)
@@ -511,6 +542,8 @@ def run_ble_ota_mode():
                 last_activity_ms = time.ticks_ms()
             elif time.ticks_diff(time.ticks_ms(), last_activity_ms) >= OTA_IDLE_TIMEOUT_MS:
                 print("BT OTA idle timeout -> rebooting")
+                turn_off_lcd_backlight(display)
+                time.sleep_ms(100)
                 machine_reset()
             service_gc(gc_state)
             time.sleep_ms(POLL_MS)

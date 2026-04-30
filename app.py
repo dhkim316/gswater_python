@@ -21,7 +21,7 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V9.1"
+APP_VERSION = "V9.2"
 APP_VERSION_PREFIX = APP_VERSION[:4]
 '''
 송수신 led처리
@@ -31,6 +31,9 @@ MQTT 연결 후 30초마다 PINGREQ 처리
 관정수위 미연결시 ....표시, 마력 8자리로 표시
 wifi 초기화 추가
 filter제어 입력 추가
+relay제어 함수 gpio extender 내용중에 pico gpio로 제어하는 내용 추가
+backlight 제어 추가, 30분간 버튼입력이나 ble입력 없으면 backlight off
+reset 버튼, 재부팅 기능
 '''
 
 CONFIG_PATH = "config.txt"
@@ -66,6 +69,9 @@ LED_PULSE_MS = 200
 SETTING_BLINK_MS = 100
 SETTING_IDLE_TIMEOUT_MS = 60000
 DISPLAY_UPDATE_BATCH = 2
+LCD_BACKLIGHT_ON_BRIGHTNESS = 100
+LCD_BACKLIGHT_OFF_BRIGHTNESS = 0
+LCD_IDLE_TIMEOUT_MS = 600000
 RF_CHANNEL = 7
 PRESSURE_VALUES = [int(40 + i * ((200 - 40) / 100)) for i in range(101)]
 WELL_LEVEL_ADC = ADC(Pin(27))
@@ -1077,6 +1083,39 @@ def show_page(display, page):
     print("PAGE -> {}".format(page))
 
 
+def set_lcd_backlight(display, enabled):
+    if not display:
+        return bool(enabled)
+    brightness = LCD_BACKLIGHT_ON_BRIGHTNESS if enabled else LCD_BACKLIGHT_OFF_BRIGHTNESS
+    display.set_brightness(brightness)
+    return bool(enabled)
+
+
+def toggle_lcd_backlight(display, backlight_enabled):
+    next_enabled = not backlight_enabled
+    try:
+        set_lcd_backlight(display, next_enabled)
+        print("btn_back_light pressed -> LCD backlight {}".format("on" if next_enabled else "off"))
+        return next_enabled
+    except Exception as exc:
+        print("LCD backlight toggle failed: {}".format(exc))
+        return backlight_enabled
+
+
+def is_bluetooth_connected(bt_server):
+    return bool(bt_server and bt_server.enabled and bt_server.is_connected())
+
+
+def idle_lcd_backlight_off(display, vp_map, config, pages):
+    try:
+        set_lcd_backlight(display, False)
+        show_page(display, pages[0])
+        apply_page_config_to_display(display, vp_map, config, pages[0])
+        print("LCD idle timeout -> backlight off, page 0")
+    except Exception as exc:
+        print("LCD idle timeout handling failed: {}".format(exc))
+
+
 def pad_text(value, width):
     if width <= 0:
         return value
@@ -1871,7 +1910,9 @@ def run():
     bluetooth_state = {"config_changed": False}
     setting_state = init_setting_state()
     previous_pressed = set()
+    lcd_backlight_enabled = True
     now_ms = time.ticks_ms()
+    last_lcd_activity_ms = now_ms
     gc_state = init_gc_state(now_ms)
     pump_state = init_pump_state(now_ms)
     last_rx_ok_ms = now_ms
@@ -1893,6 +1934,10 @@ def run():
     except Exception as exc:
         display = None
         print("DGUS init failed: {}".format(exc))
+    try:
+        set_lcd_backlight(display, True)
+    except Exception as exc:
+        print("LCD backlight on failed: {}".format(exc))
     try:
         rf = RFCommunicator()
         rf_receiver = RFReceiveThread(rf)
@@ -1963,12 +2008,36 @@ def run():
                 pressed = decode_buttons(read_hc165())
                 pressed_set = set(pressed)
                 newly_pressed = pressed_set.difference(previous_pressed)
+                now_ms = time.ticks_ms()
+
+                if pressed_set or is_bluetooth_connected(bt_server):
+                    last_lcd_activity_ms = now_ms
 
                 if "btn_reset" in newly_pressed:
                     print("btn_reset pressed -> system reboot")
+                    try:
+                        set_lcd_backlight(display, False)
+                        time.sleep_ms(100)
+                    except Exception as exc:
+                        print("LCD backlight off before reset failed: {}".format(exc))
                     machine_reset()
 
-                now_ms = time.ticks_ms()
+                if "btn_back_light" in newly_pressed:
+                    lcd_backlight_enabled = toggle_lcd_backlight(display, lcd_backlight_enabled)
+                    if not lcd_backlight_enabled:
+                        page_index = 0
+                        show_page(display, pages[page_index])
+                        apply_page_config_to_display(display, vp_map, config, pages[page_index])
+                    previous_pressed = pressed_set
+                    continue
+
+                if lcd_backlight_enabled and time.ticks_diff(now_ms, last_lcd_activity_ms) >= LCD_IDLE_TIMEOUT_MS:
+                    lcd_backlight_enabled = False
+                    page_index = 0
+                    idle_lcd_backlight_off(display, vp_map, config, pages)
+                    previous_pressed = pressed_set
+                    continue
+
                 mqtt_bridge.service(config)
 
                 if page_index == 0 and "btn_set" in pressed_set and "btn_enter" in newly_pressed:

@@ -1,7 +1,19 @@
+btn_reset 입력시 리셋전에 먼저 lcd 백라이트를 끌것
+부팅후에는 lcd 백라이트를 켜도록 해줘
 
-프로젝트 코드 최적화
-- 파일 수를 줄이지는 말것
-- 기존 코드 최적화
-- 불필요한 메모리 낭비요소 제거
-- 적절한 gc
-- android는 최적화 하지 말것
+정상 모드에서
+10분이상 버튼 입력이 없거나 BLE연결이 없는 상태이면 lcd 백라이트 off, page = 0 처리해줘
+
+ota모드에서는
+10분이상 버튼 입력이 없거나 BLE연결이 없는 상태이면 lcd 백라이트 off,재부팅
+
+다음 릴레이 제어 함수는 
+MCP23008이 감지 되는 경우 현재 코드를 실행하고
+    def set_relay1_panel_HI_LO(self, state):
+    def set_relay2_motor(self, state):
+    def set_relay3_alarm(self, state):
+감지가 되지 않는 경우에는 (생산 버전에 따라 칩이 기판에 없는 상황)
+    def set_relay1_panel_HI_LO(self, state):   -->     GP0 on/off 하도록
+    def set_relay2_motor(self, state):         -->     GP3 on/off 하도록
+    def set_relay3_alarm(self, state):         -->     GP2 on/off 하도록
+처리해줘

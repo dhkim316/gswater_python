@@ -164,6 +164,9 @@ class BluetoothConfigServer:
     def has_event(self):
         return self._event_index < len(self._events)
 
+    def is_connected(self):
+        return bool(self._connections)
+
     def read_event(self):
         return self._pop_buffered(self._events, "_event_index")
 

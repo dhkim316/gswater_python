@@ -9,11 +9,18 @@ OLAT = 0x0A  # 출력 래치 레지스터
 # MCP23008 I2C 주소 (기본 0x20)
 MCP23008_ADDR = 0x20
 
+FALLBACK_RELAY1_PIN = 0
+FALLBACK_RELAY2_PIN = 3
+FALLBACK_RELAY3_PIN = 2
+
+
 class GPIOExtender:
     def __init__(self, i2c=None, i2c_id=0, scl_pin=21, sda_pin=20, reset_pin=22, addr=MCP23008_ADDR):
         self.i2c = i2c if i2c is not None else I2C(i2c_id, scl=Pin(scl_pin), sda=Pin(sda_pin))
         self.reset_pin = Pin(reset_pin, Pin.OUT)
         self.addr = addr
+        self.mcp_available = False
+        self._fallback_pins = {}
         self._relay1_state = None
         self._relay2_state = None
         self._relay3_state = None
@@ -27,10 +34,37 @@ class GPIOExtender:
         time.sleep(0.01)
 
     def init_mcp23008(self):
-        # 모든 핀을 출력으로 설정
-        self.i2c.writeto_mem(self.addr, IODIR, bytes([0x00]))  # 0x00 = all output
-        self.i2c.writeto_mem(self.addr, OLAT, bytes([0x00]))
-        self._sync_relay_states()
+        if not self._detect_mcp23008():
+            print("MCP23008 not detected -> using Pico GPIO relay fallback")
+            self._sync_fallback_relay_states()
+            return
+
+        try:
+            # 모든 핀을 출력으로 설정
+            self.i2c.writeto_mem(self.addr, IODIR, bytes([0x00]))  # 0x00 = all output
+            self.i2c.writeto_mem(self.addr, OLAT, bytes([0x00]))
+            self.mcp_available = True
+            self._sync_relay_states()
+        except Exception as exc:
+            self.mcp_available = False
+            print("MCP23008 init failed -> using Pico GPIO relay fallback: {}".format(exc))
+            self._sync_fallback_relay_states()
+
+    def _detect_mcp23008(self):
+        try:
+            return self.addr in self.i2c.scan()
+        except Exception:
+            return False
+
+    def _init_fallback_outputs(self):
+        if not self._fallback_pins:
+            self._fallback_pins = {
+                0: Pin(FALLBACK_RELAY1_PIN, Pin.OUT),
+                3: Pin(FALLBACK_RELAY2_PIN, Pin.OUT),
+                2: Pin(FALLBACK_RELAY3_PIN, Pin.OUT),
+            }
+        for pin in self._fallback_pins.values():
+            pin.value(0)
 
     def _sync_relay_states(self):
         current = self.i2c.readfrom_mem(self.addr, OLAT, 1)[0]
@@ -38,9 +72,17 @@ class GPIOExtender:
         self._relay2_state = (current >> 1) & 1
         self._relay3_state = (current >> 2) & 1
 
+    def _sync_fallback_relay_states(self):
+        self._init_fallback_outputs()
+        self._relay1_state = self._fallback_pins[0].value()
+        self._relay2_state = self._fallback_pins[3].value()
+        self._relay3_state = self._fallback_pins[2].value()
+
     def write_pin(self, pin, value):
         if not 0 <= pin <= 7:
             raise ValueError("Pin must be 0-7")
+        if not self.mcp_available:
+            return self.write_fallback_pin(pin, value)
         current = self.i2c.readfrom_mem(self.addr, OLAT, 1)[0]
         if value:
             current |= (1 << pin)
@@ -49,9 +91,30 @@ class GPIOExtender:
         self.i2c.writeto_mem(self.addr, OLAT, bytes([current]))
         return True
 
+    def write_fallback_pin(self, pin, value):
+        if not self._fallback_pins:
+            self._init_fallback_outputs()
+        fallback_pin = self._get_fallback_pin(pin)
+        if fallback_pin is None:
+            raise ValueError("No fallback GPIO mapped for pin {}".format(pin))
+        fallback_pin.value(1 if value else 0)
+        return True
+
+    def _get_fallback_pin(self, pin):
+        if pin == 1:
+            return self._fallback_pins.get(3)
+        return self._fallback_pins.get(pin)
+
     def read_pin(self, pin):
         if not 0 <= pin <= 7:
             raise ValueError("Pin must be 0-7")
+        if not self.mcp_available:
+            if not self._fallback_pins:
+                self._init_fallback_outputs()
+            fallback_pin = self._get_fallback_pin(pin)
+            if fallback_pin is None:
+                raise ValueError("No fallback GPIO mapped for pin {}".format(pin))
+            return fallback_pin.value()
         current = self.i2c.readfrom_mem(self.addr, GPIO, 1)[0]
         return (current >> pin) & 1
 
@@ -69,7 +132,7 @@ class GPIOExtender:
         state = 1 if state else 0
         if self._relay2_state == state:
             return False
-        written = self.write_pin(1, state)  # ext_gp1
+        written = self.write_pin(1, state)  # ext_gp1 or pico GP3 fallback
         if written:
             self._relay2_state = state
         return written
