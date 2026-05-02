@@ -21,7 +21,7 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V9.6"
+APP_VERSION = "V9.7"
 APP_VERSION_PREFIX = APP_VERSION[:4]
 '''
 송수신 led처리
@@ -37,6 +37,7 @@ reset 버튼, 재부팅 기능
 filter cowork 설정 추가, 0이면 filter 동작 안함, 1이면 filter 동작
 mqtt filter cowork payload 추가, filter_cowork: true/false
 SET_OTTUGI_MODEL,10K 삭제 현상 제거
+압력센서 최대 출력 99 로 보정, 100이상은 99로 표시
 '''
 
 CONFIG_PATH = "config.txt"
@@ -60,7 +61,7 @@ WELL_LEVEL_MAX_M = 100
 WELL_LEVEL_SENSOR_DISCONNECTED_V = 0.2
 WELL_LEVEL_RELAY_OFF_V = 0.45
 WELL_LEVEL_RELAY_RESUME_V = 0.6
-PRESSURE_HIGH_LEVEL_ALARM_PERCENT = 95
+PRESSURE_HIGH_LEVEL_ALARM_PERCENT = 99
 RELAY3_ALARM_REASON_NONE = "NONE"
 RELAY3_ALARM_REASON_COMM_FAIL = "COMM"
 RELAY3_ALARM_REASON_LOW_LEVEL = "LOW"
@@ -1592,7 +1593,7 @@ def determine_level(parsed, config=None):
             return "70"
         return "90"
 
-    return "{:02d}".format(get_pressure_percent(value))
+    return "{:02d}".format(clamp_level_value(get_pressure_percent(value)))
 
 
 def parse_int_or_none(value):
