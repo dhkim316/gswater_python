@@ -1,7 +1,7 @@
 import gc
 import json
 import time
-from machine import ADC, I2C, Pin, reset as machine_reset, unique_id as machine_unique_id
+from machine import ADC, I2C, Pin, WDT, reset as machine_reset, unique_id as machine_unique_id
 
 try:
     import ubinascii as binascii
@@ -85,6 +85,7 @@ MQTT_PUBLISH_MS = 5000
 RTC_CACHE_MS = CLOCK_UPDATE_MS
 GC_COLLECT_INTERVAL_MS = 15000
 GC_MIN_FREE_BYTES = 32768
+WATCHDOG_TIMEOUT_MS = 8000
 
 CONFIG_METADATA = load_config_metadata()
 EXTRA_CONFIG_DEFAULT_ITEMS = (
@@ -204,6 +205,10 @@ def service_gc(gc_state, now_ms=None, force=False):
     gc.collect()
     gc_state["next_collect_ms"] = time.ticks_add(now_ms, GC_COLLECT_INTERVAL_MS)
     return True
+
+
+def feed_watchdog(wdt):
+    wdt.feed()
 
 
 def split_csv_line(line):
@@ -2011,6 +2016,9 @@ def run():
             print('BT example: {"key":"SET_STOP_LEVEL_TXT","value":"80"}')
             print('BT RTC sync: {"command":"sync_time","datetime":"2026-03-31 14:25:00"}')
 
+        wdt = WDT(timeout=WATCHDOG_TIMEOUT_MS)
+        print("Watchdog enabled: {} ms".format(WATCHDOG_TIMEOUT_MS))
+
         while True:
             try:
                 pressed = decode_buttons(read_hc165())
@@ -2037,6 +2045,7 @@ def run():
                         show_page(display, pages[page_index])
                         apply_page_config_to_display(display, vp_map, config, pages[page_index])
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 if lcd_backlight_enabled and time.ticks_diff(now_ms, last_lcd_activity_ms) >= LCD_IDLE_TIMEOUT_MS:
@@ -2044,6 +2053,7 @@ def run():
                     page_index = 0
                     idle_lcd_backlight_off(display, vp_map, config, pages)
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 mqtt_bridge.service(config)
@@ -2051,21 +2061,25 @@ def run():
                 if page_index == 0 and "btn_set" in pressed_set and "btn_enter" in newly_pressed:
                     calibrate_current_zero(display, vp_map, config)
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 if page_index == 0 and "btn_enter" in pressed_set and "btn_set" in newly_pressed:
                     calibrate_current_zero(display, vp_map, config)
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 if page_index == 0 and "btn_set" in pressed_set and "btn_up" in newly_pressed:
                     change_set_channel(display, vp_map, rf, config, 1)
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 if page_index == 0 and "btn_set" in pressed_set and "btn_down" in newly_pressed:
                     change_set_channel(display, vp_map, rf, config, -1)
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 if "btn_left" in newly_pressed:
@@ -2073,6 +2087,7 @@ def run():
                     show_page(display, pages[page_index])
                     apply_page_config_to_display(display, vp_map, config, pages[page_index])
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 if "btn_right" in newly_pressed:
@@ -2080,6 +2095,7 @@ def run():
                     show_page(display, pages[page_index])
                     apply_page_config_to_display(display, vp_map, config, pages[page_index])
                     previous_pressed = pressed_set
+                    feed_watchdog(wdt)
                     continue
 
                 clock_update_due = time.ticks_diff(now_ms, next_clock_update) >= 0
@@ -2291,6 +2307,7 @@ def run():
 
                 previous_pressed = pressed_set
                 service_gc(gc_state, time.ticks_ms())
+                feed_watchdog(wdt)
                 time.sleep_ms(POLL_MS)
             except Exception as exc:
                 print("Main loop error: {}".format(exc))
