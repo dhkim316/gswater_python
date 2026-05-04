@@ -21,7 +21,7 @@ from rf_communication_pico import RFCommunicator
 from rf_receive_thread_pico import RFReceiveThread
 from rtc_pico import RTCISL1208
 
-APP_VERSION = "V9.7"
+APP_VERSION = "V9.8"
 APP_VERSION_PREFIX = APP_VERSION[:4]
 '''
 송수신 led처리
@@ -38,6 +38,7 @@ filter cowork 설정 추가, 0이면 filter 동작 안함, 1이면 filter 동작
 mqtt filter cowork payload 추가, filter_cowork: true/false
 SET_OTTUGI_MODEL,10K 삭제 현상 제거
 압력센서 최대 출력 99 로 보정, 100이상은 99로 표시
+watchdog 추가, 8초 타임 아웃
 '''
 
 CONFIG_PATH = "config.txt"
